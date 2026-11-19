@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Andra Control</string>
+    <string name="accessibility_service_description">Andra Control memungkinkan otomasi perangkat secara aman: membaca hierarki layar, mengirim gestur sentuh, dan memasukkan teks melalui loopback lokal yang terenkripsi.</string>
+</resources>
+
+
