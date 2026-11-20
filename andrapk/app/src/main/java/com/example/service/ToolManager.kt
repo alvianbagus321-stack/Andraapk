@@ -906,6 +906,78 @@ object ToolManager {
             riskLevel = ToolRiskLevel.LOW,
             isEnabled = true,
             isBuiltIn = true
+        ),
+        CustomTool(
+            id = "github_tool_install",
+            name = "Instal Tool & Skill dari GitHub",
+            description = "Menginstal dan menyimpan permanen tool, CLI, framework, atau Agent Skill (SKILL.md) dari link GitHub (mis. https://github.com/remotion-dev/remotion, remotion-dev/skills), paket npm:<nama>, pip:<nama>, atau nama tool. Otomatis mendeteksi ekosistem, mengunduh dokumentasi/SKILL.md, memilih runtime (VM Linux / Termux), menjalankan setup, dan menyimpannya agar bisa dipakai berkali-kali",
+            category = "GitHub & Skills",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "github_tool_install",
+            parametersSchema = """{"source": "https://github.com/remotion-dev/remotion", "runtime": "auto", "alias": "", "run_setup": true}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "github_tool_setup",
+            name = "Setup Runtime Tool GitHub",
+            description = "Menjalankan ulang atau menyelesaikan instalasi dependensi (clone + npm/pip/build) untuk tool GitHub yang sudah tersimpan (mis. setelah Komputer Virtual Linux dinyalakan)",
+            category = "GitHub & Skills",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "github_tool_setup",
+            parametersSchema = """{"id": "remotion", "runtime": "vm"}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "github_tool_run",
+            name = "Jalankan Tool GitHub Tersimpan",
+            description = "Menjalankan tool GitHub yang sudah terpasang permanen berkali-kali di runtime-nya (VM Linux atau Termux). Bisa kirim 'args' untuk mengisi template default atau 'command' penuh",
+            category = "GitHub & Skills",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "github_tool_run",
+            parametersSchema = """{"id": "remotion", "command": "", "args": "--version", "workdir": "", "timeout_sec": 120}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "github_tool_read_docs",
+            name = "Baca SKILL.md / README Tool GitHub",
+            description = "Membaca dokumentasi SKILL.md, sub-skill, atau README.md tersimpan dari tool GitHub yang sudah diinstal agar AI mengikuti aturan resmi penggunaannya",
+            category = "GitHub & Skills",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "github_tool_read_docs",
+            parametersSchema = """{"id": "remotion_skills", "file": "", "query": ""}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "github_tool_list",
+            name = "Daftar Tool GitHub Terpasang",
+            description = "Menampilkan semua tool, CLI, dan Agent Skill dari GitHub yang tersimpan permanen di perangkat",
+            category = "GitHub & Skills",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "github_tool_list",
+            parametersSchema = """{}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "github_tool_remove",
+            name = "Hapus Tool GitHub Terpasang",
+            description = "Menghapus tool/skill GitHub dari registry permanen dan membersihkan direktori instalasinya",
+            category = "GitHub & Skills",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "github_tool_remove",
+            parametersSchema = """{"id": "remotion"}""",
+            riskLevel = ToolRiskLevel.MEDIUM,
+            isEnabled = true,
+            isBuiltIn = true
         )
     )
 
@@ -1148,6 +1220,7 @@ object ToolManager {
                     "wait_for_element", "dumpsys_window", "get_device_resolution",
                     "get_current_app", "list_apps", "recall_memory", "wait_stable", "ocr_region",
                     "diff_screen", "scroll_to_text", "web_fetch", "agent_plan", "wait_seconds",
+                    "vm_status", "vm_inspect_screen", "github_tool_list", "github_tool_read_docs",
                     "terminal_bg_list", "terminal_bg_read"
                 )
                 if (!isReadOnly) {
@@ -2093,8 +2166,62 @@ object ToolManager {
                 }
             }
 
+            "github_tool_install" -> {
+                val src = params.optString("source", params.optString("url", params.optString("repo", "")))
+                val runtime = params.optString("runtime", "auto")
+                val alias = params.optString("alias", params.optString("name", ""))
+                val runSetup = params.optBoolean("run_setup", true)
+                GitHubToolManager.installFromSource(
+                    source = src,
+                    preferredRuntime = runtime,
+                    customAlias = alias,
+                    runSetupNow = runSetup
+                )
+            }
+
+            "github_tool_setup" -> {
+                val id = params.optString("id", params.optString("name", ""))
+                val runtime = params.optString("runtime", "")
+                GitHubToolManager.setupToolById(id, runtime)
+            }
+
+            "github_tool_run" -> {
+                val id = params.optString("id", params.optString("name", ""))
+                val cmd = params.optString("command", params.optString("cmd", ""))
+                val args = params.optString("args", "")
+                val workdir = params.optString("workdir", params.optString("cwd", ""))
+                val timeoutSec = params.optInt("timeout_sec", 120)
+                GitHubToolManager.runInstalledTool(id, cmd, args, workdir, timeoutSec)
+            }
+
+            "github_tool_read_docs" -> {
+                val id = params.optString("id", params.optString("name", ""))
+                val file = params.optString("file", params.optString("filename", ""))
+                val query = params.optString("query", "")
+                GitHubToolManager.readToolDocs(id, file, query)
+            }
+
+            "github_tool_list" -> {
+                GitHubToolManager.listInstalledToolsReport()
+            }
+
+            "github_tool_remove" -> {
+                val id = params.optString("id", params.optString("name", ""))
+                GitHubToolManager.removeTool(id)
+            }
+
             else -> {
-                ToolResult("ok", result = "Perintah custom logic '$command' selesai dijalankan.")
+                val trimmedCmd = command.trim()
+                if (trimmedCmd.startsWith("github_tool_invoke:", ignoreCase = true)) {
+                    val toolSlug = trimmedCmd.substringAfter(":").trim()
+                    val cmd = params.optString("command", params.optString("cmd", ""))
+                    val args = params.optString("args", "")
+                    val workdir = params.optString("workdir", params.optString("cwd", ""))
+                    val timeoutSec = params.optInt("timeout_sec", 120)
+                    GitHubToolManager.runInstalledTool(toolSlug, cmd, args, workdir, timeoutSec)
+                } else {
+                    ToolResult("ok", result = "Perintah custom logic '$command' selesai dijalankan.")
+                }
             }
         }
     }

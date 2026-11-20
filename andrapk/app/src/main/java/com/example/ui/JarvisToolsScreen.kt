@@ -45,14 +45,16 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
     val coroutineScope = rememberCoroutineScope()
 
     val allTools by ToolManager.tools.collectAsStateWithLifecycle()
+    val installedGitHubTools by com.example.service.GitHubToolManager.installedTools.collectAsStateWithLifecycle()
     val permissionMode by ToolManager.permissionMode.collectAsStateWithLifecycle()
     val customPerms by ToolManager.customPermissions.collectAsStateWithLifecycle()
 
     var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf("all") } // all, active, builtin, custom
+    var selectedFilter by remember { mutableStateOf("all") } // all, active, builtin, custom, github, termux
 
     var showGuideDialog by remember { mutableStateOf(false) }
     var showAddEditDialog by remember { mutableStateOf(false) }
+    var showGitHubInstallDialog by remember { mutableStateOf(false) }
     var toolToEdit by remember { mutableStateOf<CustomTool?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showCustomPermsDialog by remember { mutableStateOf(false) }
@@ -70,6 +72,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                 "active" -> tool.isEnabled
                 "builtin" -> tool.isBuiltIn
                 "custom" -> !tool.isBuiltIn
+                "github" -> tool.category.contains("GitHub", ignoreCase = true) || tool.id.startsWith("github_tool") || tool.id.startsWith("gh_")
                 "termux" -> tool.category.contains("Termux", ignoreCase = true) || tool.id.startsWith("termux")
                 else -> true
             }
@@ -120,6 +123,20 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                         text = "${allTools.count { it.isEnabled }} aktif dari ${allTools.size} tersedia",
                         style = MaterialTheme.typography.bodySmall,
                         color = JarvisTextSecondary
+                    )
+                }
+
+                IconButton(
+                    onClick = { showGitHubInstallDialog = true },
+                    modifier = Modifier
+                        .size(34.dp)
+                        .testTag("btn_install_github_tool")
+                ) {
+                    Icon(
+                        Icons.Default.CloudDownload,
+                        contentDescription = "Instal tool dari GitHub",
+                        tint = JarvisCyan,
+                        modifier = Modifier.size(19.dp)
                     )
                 }
 
@@ -232,6 +249,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
             ) {
                 listOf(
                     "all" to "Semua (${allTools.size})",
+                    "github" to "GitHub (${installedGitHubTools.size})",
                     "active" to "Aktif (${allTools.count { it.isEnabled }})",
                     "builtin" to "Bawaan (${allTools.count { it.isBuiltIn }})",
                     "custom" to "Kustom (${allTools.count { !it.isBuiltIn }})",
@@ -293,6 +311,34 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 104.dp)
                 ) {
+                    if (selectedFilter == "github" && installedGitHubTools.isNotEmpty()) {
+                        items(installedGitHubTools, key = { "gh_repo_${it.id}" }) { ghTool ->
+                            InstalledGitHubToolCard(
+                                tool = ghTool,
+                                onSetup = {
+                                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        val res = com.example.service.GitHubToolManager.setupToolById(ghTool.id)
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            Toast.makeText(
+                                                context,
+                                                (res.result ?: res.message ?: "Setup selesai").take(120),
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                onDelete = {
+                                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        com.example.service.GitHubToolManager.removeTool(ghTool.id)
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            Toast.makeText(context, "Tool '${ghTool.name}' dihapus", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+
                     items(filteredTools, key = { it.id }) { tool ->
                         ToolItemCard(
                             tool = tool,
@@ -378,6 +424,13 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
         TestRunToolDialog(
             tool = tool,
             onDismiss = { testToolTarget = null }
+        )
+    }
+
+    // Install Tool from GitHub Dialog
+    if (showGitHubInstallDialog) {
+        GitHubToolInstallDialog(
+            onDismiss = { showGitHubInstallDialog = false }
         )
     }
 }

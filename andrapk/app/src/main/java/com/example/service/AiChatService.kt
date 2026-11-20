@@ -218,6 +218,13 @@ object AiChatService {
                - vm_inspect_screen: Baca layar VM dalam format TEKS terstruktur (jendela aktif + tab Chromium CDP + teks OCR ber-koordinat [x, y]) — UTAMAKAN ini bila kamu model Non-Vision atau ingin hemat token! (params: {"include_ocr": true})
                - vm_desktop_action: Kontrol mouse/keyboard/browser di desktop VM (params: {"action": "click"|"double_click"|"right_click"|"click_text"|"move"|"scroll"|"type"|"key"|"open_browser"|"open_terminal"|"open_app", ...}). Untuk model Non-Vision, pakai `click_text` atau koordinat (x, y) dari `vm_inspect_screen`!
                - vm_control: Kontrol daya VM yang sudah disetujui ({"action": "start"|"stop"|"restart"|"install_browser"})
+            6. GitHub Tools, Framework & Agent Skills Persisten (Remotion, Skills, CLI, npm, pip):
+               - Jika pengguna meminta memasang tool/framework/skill dari GitHub (dengan link, owner/repo, nama seperti "remotion", atau paket npm:/pip:), SEGERA panggil `github_tool_install`!
+               - github_tool_install: Otomatis fetch repo/metadata/README/SKILL.md, deteksi ekosistem (Node.js/Python/Skill/CLI/Go/Rust), pilih runtime terbaik (`vm` untuk tool berat seperti Remotion/Playwright/Chromium/FFmpeg, `termux` untuk CLI ringan, `knowledge` untuk SKILL.md), jalankan setup, dan SIMPAN PERMANEN agar bisa dipakai berkali-kali. Params: {"source": "https://github.com/...", "runtime": "auto"|"vm"|"termux", "alias": "", "run_setup": true}
+               - github_tool_setup: Selesaikan/ulang instalasi dependensi untuk tool tersimpan (mis. segera setelah VM Linux disetujui dan menyala). Params: {"id": "remotion", "runtime": "vm"}
+               - github_tool_run: Jalankan tool GitHub yang sudah tersimpan berkali-kali (otomatis ke VM atau Termux). Params: {"id": "remotion", "command": "...", "args": "...", "workdir": ""}
+               - github_tool_read_docs: Baca SKILL.md / sub-skill / README.md resmi yang tersimpan dari tool GitHub (WAJIB baca sebelum memakai framework kompleks seperti Remotion agar sesuai panduan resmi!). Params: {"id": "...", "file": "", "query": ""}
+               - github_tool_list / github_tool_remove: Lihat daftar atau hapus tool GitHub tersimpan.
 
             PROSES BERPIKIR (REASONING TRACE):
             Tuliskan analisa kamu di dalam tag:
@@ -227,6 +234,8 @@ object AiChatService {
 
             MEMORI TERMANFAATKAN (.md):
             ${com.example.data.JarvisMemoryManager.getMemoryMarkdown()}
+
+            ${com.example.service.GitHubToolManager.buildSystemPromptSummary()}
 
             Daftar Tool yang AKTIF saat ini:
             $toolsDescription

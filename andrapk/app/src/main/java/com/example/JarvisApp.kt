@@ -40,6 +40,7 @@ class JarvisApp : Application() {
         // Init tool registry: prefs ringan disinkron, parsing JSON custom tools
         // dipindah ke background thread agar tidak memblokir main thread.
         com.example.service.ToolManager.init(this)
+        com.example.service.GitHubToolManager.init(this)
 
         // Hotword manager: hanya membaca prefs sinkron; SpeechRecognizer (berat)
         // baru dinyalakan terjadwal belakangan — lihat init() di managernya.
