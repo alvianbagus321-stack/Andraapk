@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@source not "../andrapk";
+@source not "../uploads";
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;

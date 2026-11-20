@@ -69,6 +69,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
     val setupCommand = "curl -s http://127.0.0.1:$port/setup.sh | bash"
     val mcpSetupCommand = "curl -s http://127.0.0.1:$port/setup-mcp.sh | bash"
 
+    var showVmViewerDialog by remember { mutableStateOf(false) }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -76,6 +78,13 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp)
     ) {
+        // AI Virtual Computer (Termux proot-distro + Live noVNC Viewer)
+        item {
+            VirtualComputerControlCard(
+                onOpenViewer = { showVmViewerDialog = true }
+            )
+        }
+
         // Live Persistent AI Agent Terminal Console (shared between AI & User)
         item {
             AgentTerminalConsoleCard()
@@ -691,6 +700,12 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                 }
             }
         }
+    }
+
+    if (showVmViewerDialog) {
+        VirtualComputerViewerDialog(
+            onDismiss = { showVmViewerDialog = false }
+        )
     }
 }
 

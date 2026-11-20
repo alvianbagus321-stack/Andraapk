@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
+  Download,
   FolderTree,
   GitBranch,
   Images,
@@ -204,6 +205,16 @@ export default function App() {
               <span className="text-[10px] font-mono text-[#646E7E]">({allImages.length})</span>
             )}
           </button>
+
+          <a
+            href="/api/workspace/export-zip"
+            download="Andrapk-v2.60.zip"
+            title="Unduh seluruh proyek andrapk sebagai ZIP"
+            className="ml-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium bg-[#1D3252] text-[#8CC0FF] border border-[#2F5387] hover:bg-[#25406B] transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Download ZIP</span>
+          </a>
 
           <button
             type="button"

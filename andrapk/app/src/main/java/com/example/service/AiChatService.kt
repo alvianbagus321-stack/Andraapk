@@ -209,6 +209,15 @@ object AiChatService {
             4. Custom Tools Layer:
                - create_tool: Membuat tool baru secara dinamis (params: {"name": "...", "description": "...", "script_type": "shell", "command": "...", "parameters_schema": "{}"})
                - create_python_tool: Membuat script tool Python lengkap untuk dieksekusi (params: {"filename": "tool.py", "tool_name": "...", "description": "...", "code": "..."})
+            5. Komputer Virtual Linux Milik AI (Termux proot-distro + Openbox/noVNC + Chromium CDP):
+               - ATURAN PERSETUJUAN WAJIB: Sebelum membuat atau memakai Komputer Virtual pertama kali, WAJIB panggil `vm_request_create` terlebih dahulu agar kartu persetujuan tampil di Chat. Setelah memanggil `vm_request_create`, BERHENTI memanggil tool VM dan tunggu pengguna menekan 'Setujui & Jalankan' atau 'Tolak'.
+               - vm_request_create: Mengirim kartu persetujuan ke Chat (params: {"distro": "debian"|"ubuntu", "mode": "gui"|"cli", "include_browser": true, "packages": [], "reason": "..."})
+               - vm_status: Cek status Komputer Virtual, alamat live viewer noVNC, RAM, dan disk ({})
+               - vm_exec: Eksekusi penuh perintah Linux/bash/Python/Node/Git di dalam container VM terisolasi (params: {"command": "...", "workdir": "/root", "timeout_sec": 45})
+               - vm_screenshot: Tangkap layar desktop X11 VM (DISPLAY=:1). Model Vision menerima gambar langsung; model Non-Vision otomatis menerima daftar teks OCR + koordinat klik (x, y) & tab Chromium!
+               - vm_inspect_screen: Baca layar VM dalam format TEKS terstruktur (jendela aktif + tab Chromium CDP + teks OCR ber-koordinat [x, y]) — UTAMAKAN ini bila kamu model Non-Vision atau ingin hemat token! (params: {"include_ocr": true})
+               - vm_desktop_action: Kontrol mouse/keyboard/browser di desktop VM (params: {"action": "click"|"double_click"|"right_click"|"click_text"|"move"|"scroll"|"type"|"key"|"open_browser"|"open_terminal"|"open_app", ...}). Untuk model Non-Vision, pakai `click_text` atau koordinat (x, y) dari `vm_inspect_screen`!
+               - vm_control: Kontrol daya VM yang sudah disetujui ({"action": "start"|"stop"|"restart"|"install_browser"})
 
             PROSES BERPIKIR (REASONING TRACE):
             Tuliskan analisa kamu di dalam tag:
@@ -465,9 +474,24 @@ object AiChatService {
                     var screenAnalysisText: String? = null
                     if (!toolScreenshotB64.isNullOrBlank()) {
                         ImageDecodeManager.rememberScreenshot(toolScreenshotB64)
+                        val isVmShot = executionResult.extra["is_vm_screenshot"] == true
                         if (canSendVision) {
                             // Model vision (Gemini / GPT-4o / Claude / Qwen-VL / Llama-Vision): kirim gambar asli
                             turnScreenshotB64 = toolScreenshotB64
+                        } else if (isVmShot) {
+                            // Model non-vision pada Komputer Virtual: ekstrak teks + koordinat piksel [x, y] via ML Kit OCR
+                            onStatusUpdate("$batchLabel: Membaca teks & koordinat layar VM (mode non-vision)...")
+                            val ocrCoords = ImageDecodeManager.extractOcrWithCoordinatesFromBase64(toolScreenshotB64)
+                            val coordText = ocrCoords.getOrNull()?.formatForAgent(90)
+                            if (!coordText.isNullOrBlank()) {
+                                screenAnalysisText = "[Layar Komputer Virtual — OCR + Koordinat Klik (Mode Non-Vision)]\n$coordText\nGunakan vm_desktop_action click (x, y) atau click_text untuk berinteraksi."
+                            } else {
+                                val analysis = ImageDecodeManager.analyzeBase64(toolScreenshotB64)
+                                val analysisText = analysis.result ?: analysis.message
+                                if (!analysisText.isNullOrBlank()) {
+                                    screenAnalysisText = "[Analisa Otomatis Screenshot VM]\n$analysisText"
+                                }
+                            }
                         } else {
                             // Model non-vision: ubah screenshot menjadi deskripsi tekstual
                             onStatusUpdate("$batchLabel: Menganalisa screenshot menjadi teks (mode non-vision)...")

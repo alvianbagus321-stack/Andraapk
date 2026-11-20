@@ -822,6 +822,90 @@ object ToolManager {
             riskLevel = ToolRiskLevel.LOW,
             isEnabled = true,
             isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_request_create",
+            name = "Minta Izin Buat Komputer Virtual",
+            description = "WAJIB dipanggil sebelum memakai Komputer Virtual. Mengirim kartu persetujuan resmi ke layar Chat pengguna agar pengguna bisa menyetujui atau menolak pembuatan Linux VM terisolasi (distro: debian/ubuntu, mode: gui/cli, include_browser: true/false, packages: [...], reason: alasan)",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_request_create",
+            parametersSchema = """{"distro": "debian", "mode": "gui", "include_browser": true, "packages": [], "reason": "Alasan membutuhkan Komputer Virtual"}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_status",
+            name = "Status Komputer Virtual",
+            description = "Memeriksa status Komputer Virtual AI (berhenti/disiapkan/aktif), status persetujuan pengguna, alamat live viewer noVNC, RAM, dan kapasitas disk container",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_status",
+            parametersSchema = """{}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_exec",
+            name = "Eksekusi Perintah Linux di VM",
+            description = "Menjalankan perintah bash/Linux, Python, Node, Git, curl, atau instalasi paket secara penuh di dalam container Komputer Virtual Linux terisolasi (bekerja penuh untuk model Vision & Non-Vision)",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_exec",
+            parametersSchema = """{"command": "uname -a && ls -la", "workdir": "/root", "timeout_sec": 45}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_screenshot",
+            name = "Screenshot Layar Komputer Virtual",
+            description = "Mengambil tangkapan layar desktop X11 Komputer Virtual (DISPLAY=:1) + daftar jendela/tab aktif. Untuk model Vision dikirim sebagai gambar; untuk model Non-Vision otomatis diubah menjadi OCR teks + koordinat piksel [x, y]",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_screenshot",
+            parametersSchema = """{"save_as": "opsional"}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_inspect_screen",
+            name = "Inspeksi Teks & Koordinat Layar VM",
+            description = "Membaca isi layar Komputer Virtual dalam format TEKS terstruktur: jendela X11 aktif, tab Chromium CDP, serta seluruh teks layar beserta koordinat klik (x, y) hasil OCR — ideal untuk model Non-Vision atau inspeksi hemat token",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_inspect_screen",
+            parametersSchema = """{"include_ocr": true}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_desktop_action",
+            name = "Kontrol Mouse, Keyboard & Browser VM",
+            description = "Mengendalikan desktop & aplikasi di dalam Komputer Virtual: click, double_click, right_click, click_text (otomatis cari teks via OCR lalu klik — cocok untuk Non-Vision), move, scroll, type, key, open_browser, open_terminal, open_app",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_desktop_action",
+            parametersSchema = """{"action": "open_browser", "url": "https://www.google.com", "x": 640, "y": 360, "text": "", "key": "Return", "direction": "down", "steps": 4, "app": ""}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "vm_control",
+            name = "Kontrol Daya Komputer Virtual",
+            description = "Mengelola siklus hidup Komputer Virtual yang sudah disetujui pengguna (action: start, stop, restart, install_browser)",
+            category = "Komputer Virtual",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "vm_control",
+            parametersSchema = """{"action": "start"}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
         )
     )
 
@@ -1918,6 +2002,95 @@ object ToolManager {
 
             "wait_seconds" -> {
                 AgentWorkspaceTools.executeWaitSeconds(params)
+            }
+
+            "vm_request_create" -> {
+                val distro = params.optString("distro", "")
+                val mode = params.optString("mode", "")
+                val includeBrowser = params.optBoolean("include_browser", true)
+                val reason = params.optString("reason", "Menjalankan lingkungan Linux terisolasi untuk tugas AI.")
+                val pkgs = mutableListOf<String>()
+                val pkgArr = params.optJSONArray("packages")
+                if (pkgArr != null) {
+                    for (i in 0 until pkgArr.length()) {
+                        val p = pkgArr.optString(i, "").trim()
+                        if (p.isNotEmpty()) pkgs.add(p)
+                    }
+                }
+                VirtualComputerManager.requestCreateApproval(
+                    distroRaw = distro.ifBlank { null },
+                    modeRaw = mode.ifBlank { null },
+                    includeBrowser = includeBrowser,
+                    packages = pkgs,
+                    reason = reason
+                )
+            }
+
+            "vm_status" -> {
+                VirtualComputerManager.getStatusReport()
+            }
+
+            "vm_exec" -> {
+                val cmd = params.optString("command", params.optString("cmd", ""))
+                val workdir = params.optString("workdir", params.optString("cwd", "/root"))
+                val timeoutSec = params.optInt("timeout_sec", 45)
+                VirtualComputerManager.execInVm(cmd, workdir, timeoutSec, source = "AI")
+            }
+
+            "vm_screenshot" -> {
+                val saveAs = params.optString("save_as", "").ifBlank { null }
+                VirtualComputerManager.captureVmScreenshot(saveAs)
+            }
+
+            "vm_inspect_screen" -> {
+                val includeOcr = params.optBoolean("include_ocr", true)
+                VirtualComputerManager.inspectVmScreenText(includeOcr)
+            }
+
+            "vm_desktop_action" -> {
+                val act = params.optString("action", params.optString("act", ""))
+                val x = if (params.has("x")) params.optInt("x") else null
+                val y = if (params.has("y")) params.optInt("y") else null
+                val text = if (params.has("text")) params.optString("text") else null
+                val key = if (params.has("key")) params.optString("key") else null
+                val url = if (params.has("url")) params.optString("url") else null
+                val direction = if (params.has("direction")) params.optString("direction") else null
+                val steps = params.optInt("steps", 4)
+                val appCmd = if (params.has("app")) params.optString("app") else null
+                VirtualComputerManager.performDesktopAction(
+                    action = act,
+                    x = x,
+                    y = y,
+                    text = text,
+                    key = key,
+                    url = url,
+                    direction = direction,
+                    steps = steps,
+                    appCommand = appCmd
+                )
+            }
+
+            "vm_control" -> {
+                val act = params.optString("action", "status").lowercase().trim()
+                when (act) {
+                    "start" -> {
+                        if (!VirtualComputerManager.status.value.isApproved) {
+                            VirtualComputerManager.requestCreateApproval(
+                                reason = "Menjalankan Komputer Virtual sesuai permintaan tugas."
+                            )
+                        } else {
+                            VirtualComputerManager.startOrProvisionVm(context)
+                        }
+                    }
+                    "stop" -> VirtualComputerManager.stopVm()
+                    "restart" -> {
+                        VirtualComputerManager.stopVm()
+                        VirtualComputerManager.startOrProvisionVm(context)
+                    }
+                    "install_browser" -> VirtualComputerManager.installBrowser()
+                    "status" -> VirtualComputerManager.getStatusReport()
+                    else -> ToolResult("error", message = "Aksi vm_control '$act' tidak dikenali. Pilih: start, stop, restart, install_browser, status.")
+                }
             }
 
             else -> {

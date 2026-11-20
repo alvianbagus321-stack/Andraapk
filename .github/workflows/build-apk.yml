@@ -1,0 +1,159 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "arena/**"
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Tipe build APK (release = R8 ringan & 60fps, debug = pengujian)"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - debug
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build APK (${{ inputs.build_type || 'release' }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect Android project directory
+        run: |
+          if [ -f "andrapk/app/build.gradle.kts" ]; then
+            ANDROID_DIR="${GITHUB_WORKSPACE}/andrapk"
+          elif [ -f "app/build.gradle.kts" ]; then
+            ANDROID_DIR="${GITHUB_WORKSPACE}"
+          else
+            echo "::error::Tidak menemukan app/build.gradle.kts di root maupun di folder andrapk/."
+            exit 1
+          fi
+          echo "ANDROID_DIR=${ANDROID_DIR}" >> "$GITHUB_ENV"
+          echo "Detected Android project at: ${ANDROID_DIR}"
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Prepare .env & Android SDK licenses
+        working-directory: ${{ env.ANDROID_DIR }}
+        run: |
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+          SDKMGR="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKMGR" ]; then
+            yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+            yes | "$SDKMGR" "platform-tools" "platforms;android-36.1" "build-tools;36.0.0" >/dev/null 2>&1 \
+              || yes | "$SDKMGR" "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 \
+              || true
+          fi
+
+      - name: Prepare signing keystore
+        id: keystore
+        working-directory: ${{ env.ANDROID_DIR }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            KS_FILE="${ANDROID_DIR}/my-upload-key.jks"
+            if [ -n "$KEYSTORE_BASE64" ]; then
+              echo "$KEYSTORE_BASE64" | base64 -d > "$KS_FILE"
+              echo "STORE_PASSWORD=${SECRET_STORE_PASSWORD}" >> "$GITHUB_ENV"
+              echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD:-$SECRET_STORE_PASSWORD}" >> "$GITHUB_ENV"
+              echo "mode=secret" >> "$GITHUB_OUTPUT"
+            else
+              PASS="andra-auto-release-keystore"
+              rm -f "$KS_FILE"
+              keytool -genkeypair -v \
+                -keystore "$KS_FILE" \
+                -alias upload \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass "$PASS" -keypass "$PASS" \
+                -dname "CN=AndraControl,OU=Dev,O=Personal,L=Indonesia,ST=ID,C=ID"
+              echo "STORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
+              echo "KEY_PASSWORD=$PASS" >> "$GITHUB_ENV"
+              echo "mode=generated" >> "$GITHUB_OUTPUT"
+            fi
+            echo "KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
+          else
+            if [ ! -f debug.keystore ]; then
+              keytool -genkeypair -keystore debug.keystore \
+                -storepass android -keypass android \
+                -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            echo "mode=debug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build APK
+        working-directory: ${{ env.ANDROID_DIR }}
+        run: |
+          BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            gradle assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleRelease --no-daemon --stacktrace
+          fi
+
+      - name: Prepare named APK output
+        id: apk
+        working-directory: ${{ env.ANDROID_DIR }}
+        run: |
+          BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+          VER_NAME="$(sed -n 's/.*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)"
+          VER_CODE="$(sed -n 's/.*versionCode[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
+          VER_NAME="${VER_NAME:-unknown}"
+          VER_CODE="${VER_CODE:-0}"
+
+          OUT_DIR="${GITHUB_WORKSPACE}/dist-apk"
+          mkdir -p "$OUT_DIR"
+          if [ "$BUILD_TYPE" = "debug" ]; then
+            SRC="app/build/outputs/apk/debug/app-debug.apk"
+          else
+            SRC="app/build/outputs/apk/release/app-release.apk"
+          fi
+
+          OUT_NAME="AndraControl-v${VER_NAME}-b${VER_CODE}-${BUILD_TYPE}.apk"
+          cp "$SRC" "${OUT_DIR}/${OUT_NAME}"
+          SIZE="$(ls -lh "${OUT_DIR}/${OUT_NAME}" | awk '{print $5}')"
+
+          echo "file=${OUT_DIR}/${OUT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "name=${OUT_NAME}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Build APK Berhasil"
+            echo "- **File:** \`${OUT_NAME}\`"
+            echo "- **Versi:** \`v${VER_NAME}\` (build \`${VER_CODE}\`)"
+            echo "- **Tipe:** \`${BUILD_TYPE}\`"
+            echo "- **Ukuran:** \`${SIZE}\`"
+            echo "- **Signing:** \`${{ steps.keystore.outputs.mode }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.file }}
+          retention-days: 14

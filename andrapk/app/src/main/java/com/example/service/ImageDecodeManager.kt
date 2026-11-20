@@ -374,6 +374,98 @@ object ImageDecodeManager {
         }
     }
 
+    data class OcrTextElement(
+        val text: String,
+        val centerX: Int,
+        val centerY: Int,
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int
+    )
+
+    data class OcrCoordinateReport(
+        val width: Int,
+        val height: Int,
+        val elements: List<OcrTextElement>
+    ) {
+        fun formatForAgent(maxItems: Int = 80): String {
+            if (elements.isEmpty()) {
+                return "Resolusi: ${width}x${height} px — Tidak ada teks yang terdeteksi di layar."
+            }
+            val shown = elements.take(maxItems)
+            val sb = StringBuilder()
+            sb.appendLine("Resolusi Layar VM: ${width}x${height} px (${elements.size} baris teks terdeteksi):")
+            shown.forEachIndexed { index, el ->
+                sb.appendLine("${index + 1}. \"${el.text}\" @ (${el.centerX}, ${el.centerY}) [${el.left},${el.top}-${el.right},${el.bottom}]")
+            }
+            if (elements.size > maxItems) {
+                sb.appendLine("...(+${elements.size - maxItems} teks lainnya)")
+            }
+            return sb.toString().trim()
+        }
+    }
+
+    /**
+     * Ekstrak seluruh teks + koordinat piksel tengah (centerX, centerY) dari gambar
+     * menggunakan ML Kit on-device OCR. Dipakai agar model AI NON-VISION tetap bisa
+     * membaca layar Komputer Virtual dan mengklik tombol/teks secara presisi.
+     */
+    suspend fun extractOcrWithCoordinates(bytes: ByteArray): Result<OcrCoordinateReport> =
+        withContext(Dispatchers.IO) {
+            try {
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: return@withContext Result.failure(IllegalArgumentException("Gagal mendekode gambar"))
+                val w = bitmap.width
+                val h = bitmap.height
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                try {
+                    val inputImage = InputImage.fromBitmap(bitmap, 0)
+                    val visionText = Tasks.await(recognizer.process(inputImage))
+                    val items = mutableListOf<OcrTextElement>()
+                    for (block in visionText.textBlocks) {
+                        for (line in block.lines) {
+                            val txt = line.text.trim()
+                            val box = line.boundingBox ?: continue
+                            if (txt.isBlank()) continue
+                            items.add(
+                                OcrTextElement(
+                                    text = txt,
+                                    centerX = box.centerX().coerceIn(0, w),
+                                    centerY = box.centerY().coerceIn(0, h),
+                                    left = box.left.coerceIn(0, w),
+                                    top = box.top.coerceIn(0, h),
+                                    right = box.right.coerceIn(0, w),
+                                    bottom = box.bottom.coerceIn(0, h)
+                                )
+                            )
+                        }
+                    }
+                    // Urutkan atas-ke-bawah, kiri-ke-kanan agar mudah dibaca AI
+                    items.sortWith(compareBy<OcrTextElement> { it.top / 20 }.thenBy { it.left })
+                    Result.success(OcrCoordinateReport(w, h, items))
+                } finally {
+                    recognizer.close()
+                    bitmap.recycle()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "OCR coordinates gagal: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    suspend fun extractOcrWithCoordinatesFromBase64(base64: String): Result<OcrCoordinateReport> =
+        withContext(Dispatchers.IO) {
+            val clean = base64.substringAfter("base64,", base64).trim()
+            if (clean.isBlank()) return@withContext Result.failure(IllegalArgumentException("Base64 kosong"))
+            val bytes = try {
+                Base64.decode(clean, Base64.DEFAULT)
+            } catch (e: Exception) {
+                return@withContext Result.failure(e)
+            }
+            extractOcrWithCoordinates(bytes)
+        }
+
     private fun simplifyRatio(w: Int, h: Int): String {
         fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
         val g = gcd(w, h).coerceAtLeast(1)

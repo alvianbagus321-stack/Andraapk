@@ -126,10 +126,13 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
     var showSessionDialog by remember { mutableStateOf(false) }
     var showThinkingHistoryDialog by remember { mutableStateOf(false) }
     var showTerminalDialog by remember { mutableStateOf(false) }
+    var showVmViewerDialog by remember { mutableStateOf(false) }
     var htmlToPreview by remember { mutableStateOf<String?>(null) }
 
     val agentPlanSteps by com.example.service.AgentWorkspaceTools.planSteps.collectAsState()
     val terminalEntries by com.example.service.AgentTerminalManager.entries.collectAsState()
+    val vmStatus by com.example.service.VirtualComputerManager.status.collectAsState()
+    val vmPendingApproval by com.example.service.VirtualComputerManager.pendingApproval.collectAsState()
 
     var pendingAudioAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val audioPermissionLauncher = rememberLauncherForActivityResult(
@@ -273,6 +276,35 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Virtual Computer Live Viewer button
+                        val vmRunning = vmStatus.state == com.example.service.VmState.RUNNING
+                        val vmPending = vmPendingApproval != null || vmStatus.state == com.example.service.VmState.PROVISIONING
+                        IconButton(
+                            onClick = { showVmViewerDialog = true },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    when {
+                                        vmRunning -> JarvisEmerald.copy(alpha = 0.14f)
+                                        vmPending -> JarvisAmber.copy(alpha = 0.14f)
+                                        else -> Color.Transparent
+                                    }
+                                )
+                                .testTag("chat_vm_viewer_button")
+                        ) {
+                            Icon(
+                                Icons.Default.Computer,
+                                contentDescription = "Komputer Virtual",
+                                tint = when {
+                                    vmRunning -> JarvisEmerald
+                                    vmPending -> JarvisAmber
+                                    else -> JarvisTextSecondary
+                                },
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+
                         // Background hotword assistant toggle
                         IconButton(
                             onClick = {
@@ -674,6 +706,48 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
             }
         }
 
+        // Virtual Computer Approval Card (inline in Chat when AI requests VM creation)
+        vmPendingApproval?.let { req ->
+            VmApprovalChatCard(
+                request = req,
+                onApprove = {
+                    showVmViewerDialog = true
+                    com.example.service.VirtualComputerManager.approveAndStart(context) { ok, msg ->
+                        if (ok && !isThinking) {
+                            viewModel.sendChatMessage(
+                                userText = "Saya sudah menyetujui dan Komputer Virtual (${req.distro.displayName}) sekarang sudah aktif. Silakan lanjutkan tugasmu di Komputer Virtual."
+                            )
+                        } else if (!ok) {
+                            coroutineScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                                Toast.makeText(context, msg.take(120), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                },
+                onReject = {
+                    com.example.service.VirtualComputerManager.rejectApproval("Ditolak oleh pengguna di Chat")
+                    if (!isThinking) {
+                        viewModel.sendChatMessage(
+                            userText = "Saya menolak permintaan pembuatan Komputer Virtual untuk saat ini. Tolong selesaikan tanpa Komputer Virtual atau tanyakan alternatif lain."
+                        )
+                    }
+                }
+            )
+        }
+
+        // Compact Active VM Bar when provisioning or running
+        if (vmPendingApproval == null && (vmStatus.state == com.example.service.VmState.RUNNING || vmStatus.state == com.example.service.VmState.PROVISIONING)) {
+            VmActiveStatusBar(
+                status = vmStatus,
+                onOpenViewer = { showVmViewerDialog = true },
+                onStop = {
+                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        com.example.service.VirtualComputerManager.stopVm()
+                    }
+                }
+            )
+        }
+
         // Input Bar Container
         Surface(
             color = JarvisSurface,
@@ -1028,6 +1102,13 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
         HtmlPreviewDialog(
             htmlCode = htmlCode,
             onDismiss = { htmlToPreview = null }
+        )
+    }
+
+    // Virtual Computer Live Viewer & Terminal Dialog
+    if (showVmViewerDialog) {
+        VirtualComputerViewerDialog(
+            onDismiss = { showVmViewerDialog = false }
         )
     }
 

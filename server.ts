@@ -318,6 +318,41 @@ async function startServer() {
     res.sendFile(resolved.absPath);
   });
 
+  app.get('/api/workspace/export-zip', async (_req, res) => {
+    const andrapkDir = path.join(WORKSPACE_ROOT, 'andrapk');
+    if (!fs.existsSync(andrapkDir)) {
+      res.status(404).json({ error: 'Folder andrapk tidak ditemukan.' });
+      return;
+    }
+    const tmpZip = `/tmp/andrapk-export-${Date.now()}.zip`;
+    const pyScript = `
+import os, sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+skip_dirs = {'.git', '.gradle', 'build', 'node_modules'}
+with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for f in files:
+            if f == '.DS_Store':
+                continue
+            full = os.path.join(root, f)
+            rel = os.path.relpath(full, src)
+            zf.write(full, rel)
+`;
+    try {
+      await execFileAsync('python3', ['-c', pyScript, andrapkDir, tmpZip], {
+        timeout: 30000,
+      });
+      res.download(tmpZip, 'Andrapk-v2.61.zip', () => {
+        fs.rmSync(tmpZip, { force: true });
+      });
+    } catch (err) {
+      fs.rmSync(tmpZip, { force: true });
+      const msg = err instanceof Error ? err.message : 'Gagal membuat file ZIP.';
+      res.status(500).json({ error: msg });
+    }
+  });
+
   app.post(
     '/api/workspace/upload',
     express.raw({ limit: '50mb', type: () => true }),
