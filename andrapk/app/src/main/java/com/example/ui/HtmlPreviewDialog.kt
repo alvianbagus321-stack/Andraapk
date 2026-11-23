@@ -8,8 +8,9 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -26,25 +27,30 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
- * Helper to extract HTML code blocks from chat text.
+ * Helper kompatibilitas untuk mendeteksi kode HTML dari teks chat.
  */
 object HtmlCodeExtractor {
+    private val MARKDOWN_HTML_REGEX = Regex("```(?:html|htm|svg|xml)?[^\\n]*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+
     fun extractHtml(text: String): String? {
-        // Look for ```html ... ```
-        val markdownRegex = Regex("```(?:html|xml)?\\s*([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
-        val matches = markdownRegex.findAll(text)
+        if (!text.contains('<')) return null
+        val matches = MARKDOWN_HTML_REGEX.findAll(text)
         for (match in matches) {
             val code = match.groupValues[1].trim()
             if (code.contains("<html", ignoreCase = true) ||
                 code.contains("<!DOCTYPE", ignoreCase = true) ||
+                code.contains("<svg", ignoreCase = true) ||
                 code.contains("<div", ignoreCase = true) ||
                 code.contains("<style", ignoreCase = true) ||
                 code.contains("<body", ignoreCase = true) ||
@@ -55,7 +61,6 @@ object HtmlCodeExtractor {
             }
         }
 
-        // Look for raw <!DOCTYPE html> or <html>
         if (text.contains("<!DOCTYPE html>", ignoreCase = true) || text.contains("<html", ignoreCase = true)) {
             val startIdx = text.indexOf("<!DOCTYPE", ignoreCase = true).let { if (it >= 0) it else text.indexOf("<html", ignoreCase = true) }
             val endIdx = text.lastIndexOf("</html>", ignoreCase = true)
@@ -73,7 +78,7 @@ object HtmlCodeExtractor {
 }
 
 /**
- * Preview banner card shown below a chat message that contains HTML.
+ * Kartu banner cadangan jika ada HTML mentah di luar blok kode terstruktur.
  */
 @Composable
 fun HtmlPreviewBanner(
@@ -81,15 +86,13 @@ fun HtmlPreviewBanner(
     onOpenPreview: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .padding(top = 8.dp),
         color = JarvisSurfaceVariant,
         shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.5f))
+        border = BorderStroke(1.dp, JarvisBorderStrong)
     ) {
         Row(
             modifier = Modifier
@@ -99,15 +102,15 @@ fun HtmlPreviewBanner(
         ) {
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = JarvisCyan.copy(alpha = 0.15f),
-                modifier = Modifier.size(36.dp)
+                color = JarvisCyan.copy(alpha = 0.14f),
+                modifier = Modifier.size(34.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         Icons.Default.Language,
                         contentDescription = "HTML Web",
                         tint = JarvisCyan,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -116,15 +119,15 @@ fun HtmlPreviewBanner(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "HTML Web Code Terdeteksi",
+                    text = "Kode HTML Terdeteksi",
                     color = JarvisTextPrimary,
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "${htmlCode.length} karakter • Siap di-render secara visual",
+                    text = "${htmlCode.length} karakter · Siap di-preview",
                     color = JarvisTextSecondary,
-                    fontSize = 10.sp
+                    fontSize = 10.5.sp
                 )
             }
 
@@ -134,7 +137,7 @@ fun HtmlPreviewBanner(
                 onClick = onOpenPreview,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = JarvisCyan,
-                    contentColor = JarvisBackground
+                    contentColor = JarvisOnPrimary
                 ),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(8.dp)
@@ -146,9 +149,9 @@ fun HtmlPreviewBanner(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    "Preview Live",
+                    "Preview",
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
@@ -156,17 +159,78 @@ fun HtmlPreviewBanner(
 }
 
 /**
- * Fullscreen Interactive Dialog showing Live HTML/CSS/JS Preview with Tab switcher.
+ * Dialog Fullscreen Live Preview HTML/CSS/JS/SVG dengan:
+ * - Nama file yang bisa diubah langsung
+ * - Switcher Tampilan Live (WebView) & Source Code (monospace + nomor baris)
+ * - Tombol Reload, Salin Kode, dan Unduh File ke Downloads/AndraControl
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun HtmlPreviewDialog(
     htmlCode: String,
+    fileName: String = "index.html",
+    language: String = "html",
+    onFileNameChange: ((String) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    var selectedTab by remember { mutableStateOf(0) } // 0: Live View, 1: Source Code
+    val coroutineScope = rememberCoroutineScope()
+
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: Live View, 1: Source Code
+    var currentFileName by remember(fileName) { mutableStateOf(fileName) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var copiedRecently by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
+
+    val renderableHtml = remember(htmlCode, language) {
+        ChatMessageParser.buildPreviewHtmlDocument(htmlCode, language)
+    }
+    val lineCount = remember(htmlCode) { htmlCode.lines().size }
+    val lineNumbersText = remember(lineCount) { (1..lineCount).joinToString("\n") }
+
+    LaunchedEffect(copiedRecently) {
+        if (copiedRecently) {
+            delay(1600L)
+            copiedRecently = false
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewInstance?.apply {
+                stopLoading()
+                destroy()
+            }
+            webViewInstance = null
+        }
+    }
+
+    fun copyCurrentCode() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText(currentFileName, htmlCode))
+        copiedRecently = true
+        Toast.makeText(context, "$currentFileName disalin ke clipboard", Toast.LENGTH_SHORT).show()
+    }
+
+    fun downloadCurrentCode() {
+        if (isSaving) return
+        isSaving = true
+        coroutineScope.launch {
+            val result = CodeFileDownloader.saveCodeToDownloads(
+                context = context,
+                fileName = currentFileName,
+                code = htmlCode,
+                language = language
+            )
+            isSaving = false
+            result.onSuccess { savedPath ->
+                Toast.makeText(context, "Tersimpan: $savedPath", Toast.LENGTH_SHORT).show()
+            }.onFailure { err ->
+                Toast.makeText(context, "Gagal mengunduh: ${err.message ?: "Error"}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -175,112 +239,132 @@ fun HtmlPreviewDialog(
         Surface(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(12.dp),
-            shape = RoundedCornerShape(16.dp),
+                .padding(10.dp),
+            shape = RoundedCornerShape(14.dp),
             color = JarvisSurface,
-            border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
+            border = BorderStroke(1.dp, JarvisBorderStrong)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(JarmonTopBarBg)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .background(JarvisSurfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Default.Code,
-                        contentDescription = null,
-                        tint = JarvisCyan,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        "HTML Live Visual Preview",
-                        color = JarvisTextPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    // Refresh Web View
-                    IconButton(
-                        onClick = {
-                            webViewInstance?.loadDataWithBaseURL(null, htmlCode, "text/html", "UTF-8", null)
-                        },
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = JarvisCyan.copy(alpha = 0.14f),
                         modifier = Modifier.size(32.dp)
                     ) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "Reload",
-                            tint = JarvisCyan,
-                            modifier = Modifier.size(18.dp)
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Language,
+                                contentDescription = null,
+                                tint = JarvisCyan,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { showRenameDialog = true }
+                            .padding(vertical = 2.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = currentFileName,
+                                color = JarvisTextPrimary,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Ubah nama file",
+                                tint = JarvisTextSecondary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                        Text(
+                            text = "Mode Preview · $lineCount baris",
+                            color = JarvisTextSecondary,
+                            fontSize = 10.5.sp
                         )
                     }
 
-                    // Copy Code
-                    IconButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("HTML Code", htmlCode))
-                            Toast.makeText(context, "Kode HTML disalin ke clipboard", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.ContentCopy,
-                            contentDescription = "Copy",
-                            tint = JarvisTextSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
+                    if (selectedTab == 0) {
+                        IconButton(
+                            onClick = {
+                                webViewInstance?.loadDataWithBaseURL(
+                                    "https://localhost/",
+                                    renderableHtml,
+                                    "text/html",
+                                    "UTF-8",
+                                    null
+                                )
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Muat ulang preview",
+                                tint = JarvisCyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
 
-                    // Close Dialog
                     IconButton(
                         onClick = onDismiss,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             Icons.Default.Close,
-                            contentDescription = "Close",
+                            contentDescription = "Tutup preview",
                             tint = JarvisTextSecondary,
                             modifier = Modifier.size(20.dp)
                         )
                     }
                 }
 
-                // View Tabs (Live Web Preview vs Raw Source)
-                TabRow(
-                    selectedTabIndex = selectedTab,
-                    containerColor = JarvisSurfaceVariant,
-                    contentColor = JarvisCyan
+                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+
+                // Custom 2-tab switcher (Tampilan Live vs Source Code)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(JarvisSurface)
                 ) {
-                    Tab(
+                    PreviewModeTab(
+                        label = "Tampilan Live",
+                        icon = Icons.Default.Visibility,
                         selected = selectedTab == 0,
                         onClick = { selectedTab = 0 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Tampilan Web Live", fontSize = 12.sp, fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal)
-                            }
-                        }
+                        modifier = Modifier.weight(1f)
                     )
-                    Tab(
+                    PreviewModeTab(
+                        label = "Source Code",
+                        icon = Icons.Default.Code,
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Source Code", fontSize = 12.sp, fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal)
-                            }
-                        }
+                        modifier = Modifier.weight(1f)
                     )
                 }
 
-                // Content View
+                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+
+                // Area konten utama
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -288,7 +372,6 @@ fun HtmlPreviewDialog(
                         .background(if (selectedTab == 0) Color.White else JarvisBackground)
                 ) {
                     if (selectedTab == 0) {
-                        // Render HTML inside Android WebView
                         AndroidView(
                             factory = { ctx ->
                                 WebView(ctx).apply {
@@ -300,38 +383,179 @@ fun HtmlPreviewDialog(
                                     settings.displayZoomControls = false
                                     webViewClient = WebViewClient()
                                     webChromeClient = WebChromeClient()
-                                    loadDataWithBaseURL(null, htmlCode, "text/html", "UTF-8", null)
+                                    tag = renderableHtml
+                                    loadDataWithBaseURL("https://localhost/", renderableHtml, "text/html", "UTF-8", null)
                                     webViewInstance = this
                                 }
                             },
                             update = { wv ->
-                                wv.loadDataWithBaseURL(null, htmlCode, "text/html", "UTF-8", null)
                                 webViewInstance = wv
+                                if (wv.tag != renderableHtml) {
+                                    wv.tag = renderableHtml
+                                    wv.loadDataWithBaseURL("https://localhost/", renderableHtml, "text/html", "UTF-8", null)
+                                }
                             },
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        // Raw source code viewer
-                        Column(
+                        Row(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState())
-                                .horizontalScroll(rememberScrollState())
-                                .padding(12.dp)
+                                .padding(vertical = 10.dp)
                         ) {
                             Text(
-                                text = htmlCode,
-                                color = JarvisCyan,
-                                fontSize = 12.sp,
+                                text = lineNumbersText,
+                                color = JarvisTextTertiary,
+                                fontSize = 11.5.sp,
                                 fontFamily = FontFamily.Monospace,
-                                lineHeight = 16.sp
+                                lineHeight = 17.sp,
+                                modifier = Modifier.padding(start = 12.dp, end = 10.dp)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(end = 12.dp)
+                            ) {
+                                Text(
+                                    text = htmlCode,
+                                    color = Color(0xFFDCE4EE),
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 17.sp,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+
+                // Footer aksi: Salin & Unduh langsung dari Mode Preview
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(JarvisSurfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = { copyCurrentCode() },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(9.dp),
+                        border = BorderStroke(1.dp, if (copiedRecently) JarvisEmerald else JarvisBorderStrong),
+                        contentPadding = PaddingValues(vertical = 9.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (copiedRecently) Icons.Default.Check else Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            tint = if (copiedRecently) JarvisEmerald else JarvisTextPrimary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (copiedRecently) "Tersalin" else "Salin Kode",
+                            color = if (copiedRecently) JarvisEmerald else JarvisTextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
+                    Button(
+                        onClick = { downloadCurrentCode() },
+                        enabled = !isSaving,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = JarvisCyan,
+                            contentColor = JarvisOnPrimary
+                        ),
+                        shape = RoundedCornerShape(9.dp),
+                        contentPadding = PaddingValues(vertical = 9.dp)
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 1.8.dp,
+                                color = JarvisOnPrimary
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
                             )
                         }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isSaving) "Menyimpan..." else "Unduh File",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
         }
     }
+
+    if (showRenameDialog) {
+        RenameCodeFileDialog(
+            currentName = currentFileName,
+            language = language,
+            onConfirm = { newName ->
+                val sanitized = CodeFileDownloader.sanitizeFileName(newName, language)
+                currentFileName = sanitized
+                onFileNameChange?.invoke(sanitized)
+                showRenameDialog = false
+                Toast.makeText(context, "Nama file diubah: $sanitized", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showRenameDialog = false }
+        )
+    }
 }
 
-private val JarmonTopBarBg = Color(0xFF131E35)
+@Composable
+private fun PreviewModeTab(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .padding(top = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) JarvisCyan else JarvisTextSecondary,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = label,
+                color = if (selected) JarvisTextPrimary else JarvisTextSecondary,
+                fontSize = 12.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp)
+                .background(if (selected) JarvisCyan else Color.Transparent)
+        )
+    }
+}

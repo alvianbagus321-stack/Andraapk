@@ -975,7 +975,55 @@ object ToolManager {
             scriptType = ToolScriptType.CUSTOM_LOGIC,
             command = "github_tool_remove",
             parametersSchema = """{"id": "remotion"}""",
-            riskLevel = ToolRiskLevel.MEDIUM,
+            riskLevel = ToolRiskLevel.HIGH,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "mcp_list_servers",
+            name = "Daftar Server MCP (Preset & Kustom)",
+            description = "Menampilkan semua server MCP eksternal (Canva, GitHub, Notion, Figma, Linear, Supabase, Vercel, Atlassian, Stripe, Context7, DeepWiki, Cloudflare, serta server kustom) beserta status koneksi dan jumlah tool-nya",
+            category = "MCP",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "mcp_list_servers",
+            parametersSchema = """{}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "mcp_list_tools",
+            name = "Daftar Tool Server MCP",
+            description = "Melihat semua remote tool beserta skema argumen JSON pada sebuah server MCP yang terhubung (mis. server_id: 'canva', 'github', 'notion', 'figma', 'context7')",
+            category = "MCP",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "mcp_list_tools",
+            parametersSchema = """{"server_id": "canva"}""",
+            riskLevel = ToolRiskLevel.SAFE,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "mcp_call_tool",
+            name = "Panggil Tool Server MCP",
+            description = "Mengeksekusi remote tool pada server MCP eksternal yang sudah terhubung (Canva, GitHub, Notion, Figma, Linear, Supabase, Context7, dll.)",
+            category = "MCP",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "mcp_call_tool",
+            parametersSchema = """{"server_id": "context7", "tool_name": "resolve-library-id", "arguments": {}}""",
+            riskLevel = ToolRiskLevel.LOW,
+            isEnabled = true,
+            isBuiltIn = true
+        ),
+        CustomTool(
+            id = "mcp_connect_server",
+            name = "Hubungkan / Sinkronkan Server MCP",
+            description = "Menghubungkan atau menyinkronkan ulang server MCP tanpa login (seperti Context7, DeepWiki, Cloudflare) atau menyegarkan daftar tool server MCP yang sudah terotorisasi",
+            category = "MCP",
+            scriptType = ToolScriptType.CUSTOM_LOGIC,
+            command = "mcp_connect_server",
+            parametersSchema = """{"server_id": "context7"}""",
+            riskLevel = ToolRiskLevel.LOW,
             isEnabled = true,
             isBuiltIn = true
         )
@@ -1221,6 +1269,7 @@ object ToolManager {
                     "get_current_app", "list_apps", "recall_memory", "wait_stable", "ocr_region",
                     "diff_screen", "scroll_to_text", "web_fetch", "agent_plan", "wait_seconds",
                     "vm_status", "vm_inspect_screen", "github_tool_list", "github_tool_read_docs",
+                    "mcp_list_servers", "mcp_list_tools",
                     "terminal_bg_list", "terminal_bg_read"
                 )
                 if (!isReadOnly) {
@@ -2210,17 +2259,79 @@ object ToolManager {
                 GitHubToolManager.removeTool(id)
             }
 
+            "mcp_list_servers" -> {
+                McpClientManager.listServersReport()
+            }
+
+            "mcp_list_tools" -> {
+                val serverId = params.optString("server_id", params.optString("server", params.optString("id", "")))
+                if (serverId.isBlank()) {
+                    McpClientManager.listServersReport()
+                } else {
+                    McpClientManager.listServerToolsReport(serverId)
+                }
+            }
+
+            "mcp_connect_server" -> {
+                val serverId = params.optString("server_id", params.optString("server", params.optString("id", "")))
+                val token = params.optString("token", "")
+                if (serverId.isBlank()) {
+                    ToolResult("error", message = "Parameter 'server_id' wajib diisi (mis. 'context7', 'canva', 'github').")
+                } else {
+                    val srv = McpClientManager.getServer(serverId)
+                    if (srv == null) {
+                        ToolResult("error", message = "Server MCP '$serverId' tidak ditemukan.")
+                    } else if (srv.authMode == McpAuthMode.OAUTH && srv.accessToken.isBlank() && token.isBlank()) {
+                        ToolResult(
+                            "error",
+                            errorCode = "MCP_AUTH_REQUIRED",
+                            message = "Server MCP '${srv.name}' memerlukan login akun OAuth. Minta pengguna membuka Katalog Tools -> tab MCP lalu mengetuk 'Hubungkan Akun ${srv.name}'."
+                        )
+                    } else {
+                        McpClientManager.connectWithTokenOrDirect(srv.id, token.ifBlank { null })
+                    }
+                }
+            }
+
+            "mcp_call_tool" -> {
+                val serverId = params.optString("server_id", params.optString("server", ""))
+                val toolName = params.optString("tool_name", params.optString("tool", params.optString("name", "")))
+                if (serverId.isBlank() || toolName.isBlank()) {
+                    ToolResult("error", message = "Parameter 'server_id' dan 'tool_name' wajib diisi.")
+                } else {
+                    val argsObj = params.optJSONObject("arguments")
+                        ?: runCatching {
+                            val raw = params.optString("arguments", "")
+                            if (raw.isNotBlank()) JSONObject(raw) else JSONObject()
+                        }.getOrDefault(JSONObject())
+                    McpClientManager.callRemoteTool(serverId, toolName, argsObj)
+                }
+            }
+
             else -> {
                 val trimmedCmd = command.trim()
-                if (trimmedCmd.startsWith("github_tool_invoke:", ignoreCase = true)) {
-                    val toolSlug = trimmedCmd.substringAfter(":").trim()
-                    val cmd = params.optString("command", params.optString("cmd", ""))
-                    val args = params.optString("args", "")
-                    val workdir = params.optString("workdir", params.optString("cwd", ""))
-                    val timeoutSec = params.optInt("timeout_sec", 120)
-                    GitHubToolManager.runInstalledTool(toolSlug, cmd, args, workdir, timeoutSec)
-                } else {
-                    ToolResult("ok", result = "Perintah custom logic '$command' selesai dijalankan.")
+                when {
+                    trimmedCmd.startsWith("github_tool_invoke:", ignoreCase = true) -> {
+                        val toolSlug = trimmedCmd.substringAfter(":").trim()
+                        val cmd = params.optString("command", params.optString("cmd", ""))
+                        val args = params.optString("args", "")
+                        val workdir = params.optString("workdir", params.optString("cwd", ""))
+                        val timeoutSec = params.optInt("timeout_sec", 120)
+                        GitHubToolManager.runInstalledTool(toolSlug, cmd, args, workdir, timeoutSec)
+                    }
+                    trimmedCmd.startsWith("mcp_remote:", ignoreCase = true) -> {
+                        val rest = trimmedCmd.substringAfter(":")
+                        val serverId = rest.substringBefore(":").trim()
+                        val remoteToolName = rest.substringAfter(":", "").trim()
+                        if (serverId.isBlank() || remoteToolName.isBlank()) {
+                            ToolResult("error", message = "Format perintah mcp_remote tidak valid: '$trimmedCmd'")
+                        } else {
+                            McpClientManager.callRemoteTool(serverId, remoteToolName, params)
+                        }
+                    }
+                    else -> {
+                        ToolResult("ok", result = "Perintah custom logic '$command' selesai dijalankan.")
+                    }
                 }
             }
         }

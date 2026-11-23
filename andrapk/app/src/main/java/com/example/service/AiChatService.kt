@@ -225,6 +225,11 @@ object AiChatService {
                - github_tool_run: Jalankan tool GitHub yang sudah tersimpan berkali-kali (otomatis ke VM atau Termux). Params: {"id": "remotion", "command": "...", "args": "...", "workdir": ""}
                - github_tool_read_docs: Baca SKILL.md / sub-skill / README.md resmi yang tersimpan dari tool GitHub (WAJIB baca sebelum memakai framework kompleks seperti Remotion agar sesuai panduan resmi!). Params: {"id": "...", "file": "", "query": ""}
                - github_tool_list / github_tool_remove: Lihat daftar atau hapus tool GitHub tersimpan.
+            7. Klien MCP Eksternal (Canva, GitHub, Notion, Figma, Linear, Supabase, Vercel, Atlassian, Stripe, Context7, DeepWiki, Cloudflare, & Server MCP Kustom):
+               - mcp_list_servers: Lihat status semua server MCP preset & kustom (mana yang sudah terhubung dan jumlah tool-nya).
+               - mcp_list_tools: Lihat daftar remote tool beserta skema argumen pada server MCP tertentu (params: {"server_id": "canva"}).
+               - mcp_call_tool: Panggil remote tool pada server MCP yang sudah terhubung (params: {"server_id": "canva", "tool_name": "...", "arguments": {...}}). Kamu juga bisa langsung memanggil tool MCP yang sudah muncul di daftar tool aktif (prefiks `mcp_<server>_<tool>`).
+               - mcp_connect_server: Hubungkan otomatis server MCP tanpa login (context7, deepwiki, cloudflare) atau sinkronkan ulang server MCP yang sudah login. Jika server memerlukan login akun OAuth (seperti Canva, Notion, Figma, Linear, Supabase, Vercel, Atlassian, GitHub) dan belum terhubung, arahkan pengguna ke tab Tools -> MCP lalu ketuk "Hubungkan".
 
             PROSES BERPIKIR (REASONING TRACE):
             Tuliskan analisa kamu di dalam tag:
@@ -237,10 +242,19 @@ object AiChatService {
 
             ${com.example.service.GitHubToolManager.buildSystemPromptSummary()}
 
+            ${com.example.service.McpClientManager.buildSystemPromptSummary()}
+
             Daftar Tool yang AKTIF saat ini:
             $toolsDescription
 
-            Jika pengguna meminta membuat website/komponen UI, berikan kode HTML lengkap di dalam markdown ```html ... ``` agar dapat langsung di-preview di aplikasi.
+            ATURAN FORMAT KODE & MODE PREVIEW:
+            - SELALU pisahkan kode dari teks penjelasan biasa menggunakan blok kode markdown (triple backtick) disertai bahasa dan nama file yang jelas, contoh:
+              ```html:index.html
+              ...kode...
+              ```
+              atau ```python:script.py, ```kotlin:Main.kt, ```css:styles.css, ```svg:icon.svg.
+            - JANGAN mencampur kode mentah di tengah paragraf biasa agar aplikasi dapat menampilkan box pemisah kode dengan nama file, tombol salin, unduh, dan preview otomatis.
+            - Jika pengguna meminta membuat website, landing page, aplikasi web, diagram SVG, atau komponen UI, berikan kode HTML lengkap (CSS & JS inline di satu file self-contained) di dalam ```html:nama_file.html agar dapat langsung di-preview secara live di aplikasi.
             Gunakan Bahasa Indonesia yang ramah, profesional, dan ringkas.
         """.trimIndent()
 

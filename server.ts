@@ -343,7 +343,7 @@ with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
       await execFileAsync('python3', ['-c', pyScript, andrapkDir, tmpZip], {
         timeout: 30000,
       });
-      res.download(tmpZip, 'Andrapk-v2.62.zip', () => {
+      res.download(tmpZip, 'Andrapk-v2.64.zip', () => {
         fs.rmSync(tmpZip, { force: true });
       });
     } catch (err) {

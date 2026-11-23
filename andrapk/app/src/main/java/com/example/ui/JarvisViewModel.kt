@@ -177,7 +177,7 @@ class JarvisViewModel : ViewModel() {
         }
         viewModelScope.launch {
             com.example.data.ChatSessionManager.currentSession.collect { session ->
-                if (session != null) {
+                if (session != null && _chatMessages.value !== session.messages) {
                     _chatMessages.value = session.messages
                 }
             }
@@ -237,6 +237,10 @@ class JarvisViewModel : ViewModel() {
                 .filter { it.sender == com.example.model.ChatSender.USER || it.sender == com.example.model.ChatSender.AI }
                 .map { (if (it.sender == com.example.model.ChatSender.USER) "user" else "assistant") to it.text }
 
+            val appContext = com.example.JarvisApp.instance
+            val overlayAllowed = com.example.ui.JarvisOverlayManager.canDrawOverlay(appContext)
+            var lastOverlayUpdateMs = 0L
+
             val response = com.example.service.AiChatService.sendMessage(
                 userPrompt = displayPrompt,
                 apiKey = chatApiKey.value,
@@ -246,14 +250,19 @@ class JarvisViewModel : ViewModel() {
                 attachmentUri = attachmentUri,
                 attachmentMimeType = attachmentMimeType,
                 onStatusUpdate = { status ->
-                    _chatStatusText.value = status
-                    val context = com.example.JarvisApp.instance
-                    if (com.example.ui.JarvisOverlayManager.canDrawOverlay(context)) {
-                        com.example.ui.JarvisOverlayManager.show(context)
-                        if (status.contains("eksekusi", ignoreCase = true) || status.contains("tool", ignoreCase = true)) {
-                            com.example.ui.JarvisOverlayManager.onExecutingTool(status)
-                        } else {
-                            com.example.ui.JarvisOverlayManager.onThinking(status)
+                    if (_chatStatusText.value != status) {
+                        _chatStatusText.value = status
+                    }
+                    if (overlayAllowed) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastOverlayUpdateMs >= 250L) {
+                            lastOverlayUpdateMs = now
+                            com.example.ui.JarvisOverlayManager.show(appContext)
+                            if (status.contains("eksekusi", ignoreCase = true) || status.contains("tool", ignoreCase = true)) {
+                                com.example.ui.JarvisOverlayManager.onExecutingTool(status)
+                            } else {
+                                com.example.ui.JarvisOverlayManager.onThinking(status)
+                            }
                         }
                     }
                 }

@@ -194,7 +194,7 @@ fun AgentTerminalConsoleCard(
             }
 
             // Active background jobs strip
-            val activeJobs = jobs.filter { it.isAlive }
+            val activeJobs = remember(jobs) { jobs.filter { it.isAlive } }
             if (activeJobs.isNotEmpty()) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -266,8 +266,9 @@ fun AgentTerminalConsoleCard(
                         lineHeight = 16.sp
                     )
                 } else {
+                    val visibleEntries = remember(entries) { entries.takeLast(60) }
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        entries.forEach { entry ->
+                        visibleEntries.forEach { entry ->
                             val sourceColor = when (entry.source) {
                                 "AI" -> JarvisCyan
                                 "USER" -> JarvisEmerald
@@ -322,7 +323,7 @@ fun AgentTerminalConsoleCard(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                val quickCmds = listOf("pwd", "ls -la", "df -h", "uname -a", "python3 --version")
+                val quickCmds = remember { listOf("pwd", "ls -la", "df -h", "uname -a", "python3 --version") }
                 quickCmds.forEach { qc ->
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -592,6 +593,7 @@ fun LocalImagePreviewCard(
     }
 
     val bmp = thumbBitmap ?: return
+    val thumbImageBitmap = remember(bmp) { bmp.asImageBitmap() }
 
     Column(modifier = Modifier.padding(bottom = 8.dp)) {
         Box(
@@ -603,7 +605,7 @@ fun LocalImagePreviewCard(
                 .clickable { showFullScreen = true }
         ) {
             Image(
-                bitmap = bmp.asImageBitmap(),
+                bitmap = thumbImageBitmap,
                 contentDescription = caption ?: "Screenshot AI",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxWidth()
@@ -656,8 +658,9 @@ fun LocalImagePreviewCard(
                 contentAlignment = Alignment.Center
             ) {
                 fullBitmap?.let { fb ->
+                    val fullImageBitmap = remember(fb) { fb.asImageBitmap() }
                     Image(
-                        bitmap = fb.asImageBitmap(),
+                        bitmap = fullImageBitmap,
                         contentDescription = caption ?: "Screenshot Penuh",
                         contentScale = ContentScale.Fit,
                         modifier = Modifier

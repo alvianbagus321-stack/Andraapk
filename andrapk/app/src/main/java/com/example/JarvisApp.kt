@@ -41,6 +41,7 @@ class JarvisApp : Application() {
         // dipindah ke background thread agar tidak memblokir main thread.
         com.example.service.ToolManager.init(this)
         com.example.service.GitHubToolManager.init(this)
+        com.example.service.McpClientManager.init(this)
 
         // Hotword manager: hanya membaca prefs sinkron; SpeechRecognizer (berat)
         // baru dinyalakan terjadwal belakangan — lihat init() di managernya.

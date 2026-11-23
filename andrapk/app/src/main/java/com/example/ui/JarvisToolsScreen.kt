@@ -38,6 +38,25 @@ import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
+import com.example.service.McpAuthMode
+import com.example.service.McpClientManager
+import com.example.service.McpConnectionState
+import com.example.service.McpServerConfig
+
+private val ToolCardBorderActive = BorderStroke(1.dp, JarvisBorder)
+private val ToolCardBorderMuted = BorderStroke(1.dp, JarvisBorder.copy(alpha = 0.45f))
+
+private data class ToolsFilterCounts(
+    val total: Int,
+    val active: Int,
+    val builtin: Int,
+    val custom: Int,
+    val termux: Int
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JarvisToolsScreen(modifier: Modifier = Modifier) {
@@ -46,29 +65,69 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
 
     val allTools by ToolManager.tools.collectAsStateWithLifecycle()
     val installedGitHubTools by com.example.service.GitHubToolManager.installedTools.collectAsStateWithLifecycle()
+    val mcpServers by McpClientManager.servers.collectAsStateWithLifecycle()
     val permissionMode by ToolManager.permissionMode.collectAsStateWithLifecycle()
     val customPerms by ToolManager.customPermissions.collectAsStateWithLifecycle()
 
     var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf("all") } // all, active, builtin, custom, github, termux
+    var selectedFilter by remember { mutableStateOf("all") } // all, mcp, github, active, builtin, custom, termux
 
     var showGuideDialog by remember { mutableStateOf(false) }
     var showAddEditDialog by remember { mutableStateOf(false) }
     var showGitHubInstallDialog by remember { mutableStateOf(false) }
+    var showAddCustomMcpDialog by remember { mutableStateOf(false) }
+    var mcpConnectTargetId by remember { mutableStateOf<String?>(null) }
     var toolToEdit by remember { mutableStateOf<CustomTool?>(null) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showCustomPermsDialog by remember { mutableStateOf(false) }
     var testToolTarget by remember { mutableStateOf<CustomTool?>(null) }
 
-    // Filter tools
+    // Hitung semua metrik filter dalam 1 pass yang di-remember (bukan 5x iterasi setiap frame)
+    val counts = remember(allTools) {
+        var active = 0
+        var builtin = 0
+        var custom = 0
+        var termux = 0
+        for (t in allTools) {
+            if (t.isEnabled) active++
+            if (t.isBuiltIn) builtin++ else custom++
+            if (t.category.contains("Termux", ignoreCase = true) || t.id.startsWith("termux")) termux++
+        }
+        ToolsFilterCounts(
+            total = allTools.size,
+            active = active,
+            builtin = builtin,
+            custom = custom,
+            termux = termux
+        )
+    }
+
+    val connectedMcpCount = remember(mcpServers) {
+        mcpServers.count { it.state == McpConnectionState.CONNECTED }
+    }
+
+    val filteredMcpServers = remember(mcpServers, searchQuery, selectedFilter) {
+        if (selectedFilter != "mcp") emptyList()
+        else if (searchQuery.isBlank()) mcpServers
+        else mcpServers.filter { srv ->
+            srv.name.contains(searchQuery, ignoreCase = true) ||
+                srv.category.contains(searchQuery, ignoreCase = true) ||
+                srv.description.contains(searchQuery, ignoreCase = true) ||
+                srv.id.contains(searchQuery, ignoreCase = true)
+        }
+    }
+
     val filteredTools = remember(allTools, searchQuery, selectedFilter) {
+        val q = searchQuery.trim()
         allTools.filter { tool ->
-            val matchesQuery = tool.name.contains(searchQuery, ignoreCase = true) ||
-                    tool.id.contains(searchQuery, ignoreCase = true) ||
-                    tool.description.contains(searchQuery, ignoreCase = true) ||
-                    tool.category.contains(searchQuery, ignoreCase = true)
+            val matchesQuery = q.isEmpty() ||
+                tool.name.contains(q, ignoreCase = true) ||
+                tool.id.contains(q, ignoreCase = true) ||
+                tool.description.contains(q, ignoreCase = true) ||
+                tool.category.contains(q, ignoreCase = true)
 
             val matchesFilter = when (selectedFilter) {
+                "mcp" -> tool.category.startsWith("MCP", ignoreCase = true) || tool.id.startsWith("mcp_")
                 "active" -> tool.isEnabled
                 "builtin" -> tool.isBuiltIn
                 "custom" -> !tool.isBuiltIn
@@ -81,22 +140,57 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    // Callback stabil agar item LazyColumn tidak recompose sia-sia
+    val onToggleTool = remember { { toolId: String -> ToolManager.toggleTool(toolId) } }
+    val onEditTool = remember {
+        { tool: CustomTool ->
+            toolToEdit = tool
+            showAddEditDialog = true
+        }
+    }
+    val onDeleteTool = remember(context) {
+        { tool: CustomTool ->
+            val deleted = ToolManager.deleteTool(tool.id)
+            if (deleted) {
+                Toast.makeText(context, "Tool '${tool.name}' dihapus", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val onTestRunTool = remember { { tool: CustomTool -> testToolTarget = tool } }
+
+    val onPermissionModeSelected = remember {
+        { mode: AiPermissionMode ->
+            ToolManager.setPermissionMode(mode)
+            if (mode == AiPermissionMode.CUSTOM) {
+                showCustomPermsDialog = true
+            }
+        }
+    }
+    val onOpenCustomPerms = remember { { showCustomPermsDialog = true } }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = JarvisBackground,
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
-                    toolToEdit = null
-                    showAddEditDialog = true
+                    if (selectedFilter == "mcp") {
+                        showAddCustomMcpDialog = true
+                    } else {
+                        toolToEdit = null
+                        showAddEditDialog = true
+                    }
                 },
                 containerColor = JarvisCyan,
                 contentColor = JarvisOnPrimary,
-                elevation = FloatingActionButtonDefaults.elevation(4.dp, 6.dp),
+                elevation = FloatingActionButtonDefaults.elevation(2.dp, 4.dp),
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.testTag("fab_add_tool")
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Tambah tool baru")
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = if (selectedFilter == "mcp") "Tambah server MCP kustom" else "Tambah tool baru"
+                )
             }
         }
     ) { innerPadding ->
@@ -110,32 +204,55 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 6.dp),
+                    .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Katalog Tools",
+                        text = if (selectedFilter == "mcp") "MCP Hub & Preset" else "Katalog Tools",
                         style = MaterialTheme.typography.titleLarge,
-                        color = JarvisTextPrimary
+                        color = JarvisTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${allTools.count { it.isEnabled }} aktif dari ${allTools.size} tersedia",
+                        text = if (selectedFilter == "mcp") {
+                            "$connectedMcpCount terhubung dari ${mcpServers.size} server MCP"
+                        } else {
+                            "${counts.active} aktif dari ${counts.total} tersedia"
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        color = JarvisTextSecondary
+                        color = JarvisTextSecondary,
+                        maxLines = 1
+                    )
+                }
+
+                IconButton(
+                    onClick = { selectedFilter = if (selectedFilter == "mcp") "all" else "mcp" },
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (selectedFilter == "mcp" || connectedMcpCount > 0) JarvisCyan.copy(alpha = 0.12f) else Color.Transparent)
+                        .testTag("btn_open_mcp_tab")
+                ) {
+                    Icon(
+                        Icons.Default.Extension,
+                        contentDescription = "Server & Preset MCP",
+                        tint = if (selectedFilter == "mcp" || connectedMcpCount > 0) JarvisCyan else JarvisTextSecondary,
+                        modifier = Modifier.size(19.dp)
                     )
                 }
 
                 IconButton(
                     onClick = { showGitHubInstallDialog = true },
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(38.dp)
                         .testTag("btn_install_github_tool")
                 ) {
                     Icon(
                         Icons.Default.CloudDownload,
                         contentDescription = "Instal tool dari GitHub",
-                        tint = JarvisCyan,
+                        tint = JarvisTextSecondary,
                         modifier = Modifier.size(19.dp)
                     )
                 }
@@ -143,7 +260,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                 IconButton(
                     onClick = { showGuideDialog = true },
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(38.dp)
                         .testTag("btn_tool_guide")
                 ) {
                     Icon(
@@ -157,7 +274,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                 IconButton(
                     onClick = { showImportDialog = true },
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(38.dp)
                         .testTag("btn_import_tools")
                 ) {
                     Icon(
@@ -176,7 +293,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                         Toast.makeText(context, "Custom tools disalin ke clipboard", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(38.dp)
                         .testTag("btn_export_tools")
                 ) {
                     Icon(
@@ -188,25 +305,32 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-            // AI Permission Mode Card
-            PermissionModeCard(
-                currentMode = permissionMode,
-                onModeSelected = { mode ->
-                    ToolManager.setPermissionMode(mode)
-                    if (mode == AiPermissionMode.CUSTOM) {
-                        showCustomPermsDialog = true
-                    }
-                },
-                onOpenCustomSettings = { showCustomPermsDialog = true }
-            )
+            // AI Permission Mode Card (disembunyikan di tab MCP agar fokus ke koneksi akun preset)
+            if (selectedFilter != "mcp") {
+                PermissionModeCard(
+                    currentMode = permissionMode,
+                    onModeSelected = onPermissionModeSelected,
+                    onOpenCustomSettings = onOpenCustomPerms
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+            } else {
+                Spacer(modifier = Modifier.height(6.dp))
+            }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Search & Filter row
+            // Search Input
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Cari nama, ID, atau kategori tool...", fontSize = 12.5.sp, color = JarvisTextTertiary) },
+                placeholder = {
+                    Text(
+                        if (selectedFilter == "mcp") "Cari preset MCP (Canva, GitHub, Notion, Figma)..."
+                        else "Cari nama, ID, atau kategori tool...",
+                        fontSize = 12.5.sp,
+                        color = JarvisTextTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = JarvisTextSecondary, modifier = Modifier.size(18.dp)) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
@@ -233,28 +357,31 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Filter Chips — concise labels + uniform styling
+            // Filter Chips
             val chipColors = FilterChipDefaults.filterChipColors(
                 containerColor = JarvisSurface,
                 labelColor = JarvisTextSecondary,
                 selectedContainerColor = JarvisSurfaceElevated,
                 selectedLabelColor = JarvisTextPrimary
             )
-            val termuxCount = allTools.count { it.category.contains("Termux", ignoreCase = true) || it.id.startsWith("termux") }
+            val filterChips = remember(counts, installedGitHubTools.size, connectedMcpCount, mcpServers.size) {
+                listOf(
+                    "all" to "Semua (${counts.total})",
+                    "mcp" to "MCP ($connectedMcpCount/${mcpServers.size})",
+                    "github" to "GitHub (${installedGitHubTools.size})",
+                    "active" to "Aktif (${counts.active})",
+                    "builtin" to "Bawaan (${counts.builtin})",
+                    "custom" to "Kustom (${counts.custom})",
+                    "termux" to "Termux (${counts.termux})"
+                )
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                listOf(
-                    "all" to "Semua (${allTools.size})",
-                    "github" to "GitHub (${installedGitHubTools.size})",
-                    "active" to "Aktif (${allTools.count { it.isEnabled }})",
-                    "builtin" to "Bawaan (${allTools.count { it.isBuiltIn }})",
-                    "custom" to "Kustom (${allTools.count { !it.isBuiltIn }})",
-                    "termux" to "Termux ($termuxCount)"
-                ).forEach { (key, label) ->
+                filterChips.forEach { (key, label) ->
                     val isSel = selectedFilter == key
                     FilterChip(
                         selected = isSel,
@@ -265,7 +392,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                             enabled = true,
                             selected = isSel,
                             borderColor = JarvisBorder,
-                            selectedBorderColor = JarvisBorderStrong
+                            selectedBorderColor = if (key == "mcp") JarvisCyan else JarvisBorderStrong
                         ),
                         label = {
                             Text(
@@ -280,8 +407,150 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Tools List (generous bottom inset so FAB never covers card Play/Edit actions)
-            if (filteredTools.isEmpty()) {
+            // Main Content List
+            if (selectedFilter == "mcp") {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 104.dp)
+                ) {
+                    item(key = "mcp_hub_banner", contentType = "mcp_header") {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = JarvisSurface,
+                            border = ToolCardBorderActive
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Hubungkan Akun & Server MCP",
+                                        color = JarvisTextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Ketuk Hubungkan pada preset, pilih akun Anda di browser, lalu AI langsung bisa memakai seluruh tools-nya.",
+                                        color = JarvisTextSecondary,
+                                        fontSize = 11.5.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { showAddCustomMcpDialog = true },
+                                    modifier = Modifier.heightIn(min = 38.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, JarvisBorderStrong),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = JarvisTextPrimary),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Kustom", fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+                                }
+                            }
+                        }
+                    }
+
+                    if (filteredMcpServers.isEmpty()) {
+                        item(key = "mcp_empty", contentType = "empty") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Tidak ada server MCP yang cocok dengan pencarian.",
+                                    color = JarvisTextSecondary,
+                                    fontSize = 12.5.sp
+                                )
+                            }
+                        }
+                    } else {
+                        items(
+                            items = filteredMcpServers,
+                            key = { "mcp_srv_${it.id}" },
+                            contentType = { "mcp_server_card" }
+                        ) { server ->
+                            McpServerPresetCard(
+                                server = server,
+                                onConnectClick = {
+                                    if (server.authMode == McpAuthMode.NONE) {
+                                        coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                            val res = McpClientManager.connectWithTokenOrDirect(server.id)
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                Toast.makeText(
+                                                    context,
+                                                    (res.result ?: res.message ?: "Selesai").take(120),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    } else {
+                                        mcpConnectTargetId = server.id
+                                    }
+                                },
+                                onRefreshClick = {
+                                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        val res = McpClientManager.connectWithTokenOrDirect(server.id)
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                            Toast.makeText(
+                                                context,
+                                                (res.result ?: res.message ?: "Sinkronisasi selesai").take(120),
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                onDisconnectClick = {
+                                    McpClientManager.disconnectServer(server.id)
+                                    Toast.makeText(context, "Koneksi ${server.name} diputuskan", Toast.LENGTH_SHORT).show()
+                                },
+                                onDeleteCustomClick = if (!server.isBuiltInPreset) {
+                                    {
+                                        McpClientManager.removeCustomServer(server.id)
+                                        Toast.makeText(context, "Server ${server.name} dihapus", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else null
+                            )
+                        }
+                    }
+
+                    if (filteredTools.isNotEmpty()) {
+                        item(key = "mcp_tools_section_header", contentType = "section_label") {
+                            Text(
+                                text = "Tools MCP Aktif (${filteredTools.size})",
+                                color = JarvisTextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                            )
+                        }
+                        items(
+                            items = filteredTools,
+                            key = { "mcp_tool_${it.id}" },
+                            contentType = { "tool_card" }
+                        ) { tool ->
+                            ToolItemCard(
+                                tool = tool,
+                                onToggle = onToggleTool,
+                                onEdit = onEditTool,
+                                onDelete = onDeleteTool,
+                                onTestRun = onTestRunTool
+                            )
+                        }
+                    }
+                }
+            } else if (filteredTools.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -293,7 +562,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                             Icons.Default.Build,
                             contentDescription = null,
                             tint = JarvisTextTertiary,
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(36.dp)
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
@@ -312,7 +581,11 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                     contentPadding = PaddingValues(bottom = 104.dp)
                 ) {
                     if (selectedFilter == "github" && installedGitHubTools.isNotEmpty()) {
-                        items(installedGitHubTools, key = { "gh_repo_${it.id}" }) { ghTool ->
+                        items(
+                            items = installedGitHubTools,
+                            key = { "gh_repo_${it.id}" },
+                            contentType = { "github_card" }
+                        ) { ghTool ->
                             InstalledGitHubToolCard(
                                 tool = ghTool,
                                 onSetup = {
@@ -339,23 +612,17 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                         }
                     }
 
-                    items(filteredTools, key = { it.id }) { tool ->
+                    items(
+                        items = filteredTools,
+                        key = { it.id },
+                        contentType = { "tool_card" }
+                    ) { tool ->
                         ToolItemCard(
                             tool = tool,
-                            onToggle = { ToolManager.toggleTool(tool.id) },
-                            onEdit = {
-                                toolToEdit = tool
-                                showAddEditDialog = true
-                            },
-                            onDelete = {
-                                val deleted = ToolManager.deleteTool(tool.id)
-                                if (deleted) {
-                                    Toast.makeText(context, "Tool '${tool.name}' berhasil dihapus", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onTestRun = {
-                                testToolTarget = tool
-                            }
+                            onToggle = onToggleTool,
+                            onEdit = onEditTool,
+                            onDelete = onDeleteTool,
+                            onTestRun = onTestRunTool
                         )
                     }
                 }
@@ -384,7 +651,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
             onDismiss = { showAddEditDialog = false },
             onSave = { savedTool ->
                 ToolManager.addOrUpdateTool(savedTool)
-                Toast.makeText(context, "Tool '${savedTool.name}' berhasil disimpan!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Tool '${savedTool.name}' disimpan", Toast.LENGTH_SHORT).show()
                 showAddEditDialog = false
             }
         )
@@ -397,7 +664,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
             onImport = { jsonStr ->
                 val result = ToolManager.importToolsFromJson(jsonStr)
                 result.onSuccess { count ->
-                    Toast.makeText(context, "Berhasil mengimpor $count tool!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Berhasil mengimpor $count tool", Toast.LENGTH_SHORT).show()
                     showImportDialog = false
                 }.onFailure { err ->
                     Toast.makeText(context, "Gagal mengimpor: ${err.message}", Toast.LENGTH_LONG).show()
@@ -413,7 +680,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
             onDismiss = { showCustomPermsDialog = false },
             onSave = { updated ->
                 ToolManager.updateCustomPermissions(updated)
-                Toast.makeText(context, "Setelan izin kustom disimpan!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Setelan izin kustom disimpan", Toast.LENGTH_SHORT).show()
                 showCustomPermsDialog = false
             }
         )
@@ -433,6 +700,44 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
             onDismiss = { showGitHubInstallDialog = false }
         )
     }
+
+    // MCP Preset / Account Connect Dialog
+    mcpConnectTargetId?.let { targetId ->
+        val liveServer = mcpServers.firstOrNull { it.id == targetId }
+        if (liveServer != null) {
+            McpConnectDialog(
+                server = liveServer,
+                onDismiss = { mcpConnectTargetId = null }
+            )
+        } else {
+            mcpConnectTargetId = null
+        }
+    }
+
+    // Add Custom MCP Server Dialog
+    if (showAddCustomMcpDialog) {
+        AddCustomMcpServerDialog(
+            onDismiss = { showAddCustomMcpDialog = false },
+            onAdded = { created ->
+                showAddCustomMcpDialog = false
+                selectedFilter = "mcp"
+                if (created.authMode == McpAuthMode.NONE || created.accessToken.isNotBlank()) {
+                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        val res = McpClientManager.connectWithTokenOrDirect(created.id)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                (res.result ?: res.message ?: "Server MCP disimpan").take(120),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                } else {
+                    mcpConnectTargetId = created.id
+                }
+            }
+        )
+    }
 }
 
 /**
@@ -448,7 +753,7 @@ fun PermissionModeCard(
         modifier = Modifier.fillMaxWidth(),
         color = JarvisSurface,
         shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
+        border = ToolCardBorderActive
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
@@ -464,25 +769,26 @@ fun PermissionModeCard(
                         AiPermissionMode.FULL_ACCESS -> JarvisRed
                         AiPermissionMode.CUSTOM -> JarvisCyan
                     },
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Mode Izin AI (Security Level):",
+                    text = "Mode Izin AI",
                     color = JarvisTextPrimary,
                     fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f)
                 )
 
                 if (currentMode == AiPermissionMode.CUSTOM) {
                     TextButton(
                         onClick = onOpenCustomSettings,
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                        modifier = Modifier.height(28.dp)
                     ) {
                         Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(14.dp), tint = JarvisCyan)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Atur Izin", color = JarvisCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Atur", color = JarvisCyan, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -495,7 +801,7 @@ fun PermissionModeCard(
             ) {
                 PermissionModeOption(
                     title = "Sandboxed",
-                    subtitle = "Read-Only",
+                    subtitle = "Baca saja",
                     isSelected = currentMode == AiPermissionMode.SANDBOXED,
                     activeColor = JarvisTeal,
                     modifier = Modifier.weight(1f),
@@ -511,7 +817,7 @@ fun PermissionModeCard(
                 )
                 PermissionModeOption(
                     title = "Full Access",
-                    subtitle = "Bebas",
+                    subtitle = "Penuh",
                     isSelected = currentMode == AiPermissionMode.FULL_ACCESS,
                     activeColor = JarvisRed,
                     modifier = Modifier.weight(1f),
@@ -540,10 +846,12 @@ fun PermissionModeOption(
     onClick: () -> Unit
 ) {
     Surface(
-        modifier = modifier.clickable { onClick() },
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
         color = if (isSelected) JarvisSurfaceElevated else JarvisSurfaceVariant,
         shape = RoundedCornerShape(8.dp),
-        border = androidx.compose.foundation.BorderStroke(
+        border = BorderStroke(
             1.dp,
             if (isSelected) activeColor.copy(alpha = 0.65f) else JarvisBorder
         )
@@ -562,7 +870,7 @@ fun PermissionModeOption(
             Text(
                 text = subtitle,
                 color = if (isSelected) activeColor else JarvisTextTertiary,
-                fontSize = 9.sp,
+                fontSize = 9.5.sp,
                 maxLines = 1
             )
         }
@@ -570,73 +878,69 @@ fun PermissionModeOption(
 }
 
 /**
- * Single Tool Item Card with details, switch, test button, edit & delete.
+ * Single Tool Item Card — Graphite Precision non-slop layout (flat surface, single metadata line, >=36dp hit targets).
  */
 @Composable
 fun ToolItemCard(
     tool: CustomTool,
-    onToggle: () -> Unit,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    onTestRun: () -> Unit
+    onToggle: (String) -> Unit,
+    onEdit: (CustomTool) -> Unit,
+    onDelete: (CustomTool) -> Unit,
+    onTestRun: (CustomTool) -> Unit
 ) {
+    val riskColor = when (tool.riskLevel) {
+        ToolRiskLevel.SAFE -> JarvisEmerald
+        ToolRiskLevel.LOW -> JarvisAmber
+        ToolRiskLevel.HIGH -> JarvisRed
+    }
+    val riskLabel = when (tool.riskLevel) {
+        ToolRiskLevel.SAFE -> "Aman"
+        ToolRiskLevel.LOW -> "Rendah"
+        ToolRiskLevel.HIGH -> "Tinggi"
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = JarvisSurface,
         shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            if (tool.isEnabled) JarvisBorder else JarvisBorder.copy(alpha = 0.4f)
-        )
+        border = if (tool.isEnabled) ToolCardBorderActive else ToolCardBorderMuted
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Header: Name, badges & Switch
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = tool.name,
-                            color = if (tool.isEnabled) JarvisTextPrimary else JarvisTextSecondary,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (tool.createdByAi) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Surface(
-                                color = JarvisCyan.copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = "AI CREATED",
-                                    color = JarvisCyan,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-
                     Text(
-                        text = "ID: ${tool.id}",
-                        color = JarvisTextSecondary,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace
+                        text = if (tool.createdByAi) "${tool.name} · AI" else tool.name,
+                        color = if (tool.isEnabled) JarvisTextPrimary else JarvisTextSecondary,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = tool.id,
+                        color = JarvisTextTertiary,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                // Status Switch
+                Spacer(modifier = Modifier.width(8.dp))
+
                 Switch(
                     checked = tool.isEnabled,
-                    onCheckedChange = { onToggle() },
+                    onCheckedChange = { onToggle(tool.id) },
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = JarvisCyan,
-                        checkedTrackColor = JarvisCyanDark.copy(alpha = 0.5f),
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = JarvisCyan,
+                        checkedBorderColor = Color.Transparent,
                         uncheckedThumbColor = JarvisTextSecondary,
-                        uncheckedTrackColor = JarvisSurfaceVariant
+                        uncheckedTrackColor = JarvisSurfaceVariant,
+                        uncheckedBorderColor = JarvisBorderStrong
                     ),
                     modifier = Modifier.testTag("switch_${tool.id}")
                 )
@@ -644,109 +948,74 @@ fun ToolItemCard(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Description
             Text(
                 text = tool.description,
                 color = JarvisTextSecondary,
                 fontSize = 12.sp,
-                lineHeight = 16.sp
+                lineHeight = 16.5.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
 
             Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+            Spacer(modifier = Modifier.height(6.dp))
 
-            // Badges Row: Script Type, Category, Risk
+            // Single clean metadata line + crisp action buttons (zero pill sandwich)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Script type badge
-                Surface(
-                    color = JarvisSurfaceVariant,
-                    shape = RoundedCornerShape(4.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
-                ) {
-                    Text(
-                        text = tool.scriptType.name,
-                        color = JarvisCyan,
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(riskColor)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "${tool.scriptType.name} · ${tool.category} · $riskLabel",
+                    color = JarvisTextTertiary,
+                    fontSize = 10.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
 
-                // Category
-                Surface(
-                    color = JarvisSurfaceVariant,
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        text = tool.category,
-                        color = JarvisTextSecondary,
-                        fontSize = 9.sp,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-
-                // Risk level
-                Surface(
-                    color = when (tool.riskLevel) {
-                        ToolRiskLevel.SAFE -> JarvisEmerald.copy(alpha = 0.15f)
-                        ToolRiskLevel.LOW -> JarvisAmber.copy(alpha = 0.15f)
-                        ToolRiskLevel.HIGH -> JarvisRed.copy(alpha = 0.15f)
-                    },
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        text = "RISK: ${tool.riskLevel.name}",
-                        color = when (tool.riskLevel) {
-                            ToolRiskLevel.SAFE -> JarvisEmerald
-                            ToolRiskLevel.LOW -> JarvisAmber
-                            ToolRiskLevel.HIGH -> JarvisRed
-                        },
-                        fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Actions: Test Run, Edit, Delete
                 IconButton(
-                    onClick = onTestRun,
-                    modifier = Modifier.size(28.dp)
+                    onClick = { onTestRun(tool) },
+                    modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         Icons.Default.PlayArrow,
-                        contentDescription = "Test Run",
+                        contentDescription = "Uji coba tool",
                         tint = JarvisEmerald,
                         modifier = Modifier.size(18.dp)
                     )
                 }
 
                 IconButton(
-                    onClick = onEdit,
-                    modifier = Modifier.size(28.dp)
+                    onClick = { onEdit(tool) },
+                    modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         Icons.Default.Edit,
-                        contentDescription = "Edit",
-                        tint = JarvisCyan,
+                        contentDescription = "Edit tool",
+                        tint = JarvisTextSecondary,
                         modifier = Modifier.size(16.dp)
                     )
                 }
 
                 if (!tool.isBuiltIn) {
                     IconButton(
-                        onClick = onDelete,
-                        modifier = Modifier.size(28.dp)
+                        onClick = { onDelete(tool) },
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Hapus",
+                            Icons.Default.DeleteOutline,
+                            contentDescription = "Hapus tool",
                             tint = JarvisRed,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
                 }

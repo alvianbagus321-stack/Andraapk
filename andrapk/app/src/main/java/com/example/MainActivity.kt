@@ -27,12 +27,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.service.JarvisCompanionService
 import com.example.ui.JarvisChatScreen
 import com.example.ui.JarvisDashboardScreen
@@ -140,6 +143,8 @@ fun JarvisMainApp(
     onRequestMediaProjection: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    val visitedTabs = remember { mutableStateListOf(0) }
+    val focusManager = LocalFocusManager.current
 
     val navItems = remember {
         listOf(
@@ -170,7 +175,15 @@ fun JarvisMainApp(
                         val isSelected = selectedTab == index
                         NavigationBarItem(
                             selected = isSelected,
-                            onClick = { selectedTab = index },
+                            onClick = {
+                                if (selectedTab != index) {
+                                    focusManager.clearFocus()
+                                    if (index !in visitedTabs) {
+                                        visitedTabs.add(index)
+                                    }
+                                    selectedTab = index
+                                }
+                            },
                             icon = {
                                 Icon(
                                     imageVector = icon,
@@ -206,17 +219,54 @@ fun JarvisMainApp(
                 .padding(innerPadding)
         ) {
             AuroraBackdrop {
-                when (selectedTab) {
-                    0 -> JarvisDashboardScreen(
-                        viewModel = viewModel,
-                        onRequestMediaProjection = onRequestMediaProjection
-                    )
-                    1 -> JarvisSandboxScreen(viewModel = viewModel)
-                    2 -> JarvisTermuxScreen(viewModel = viewModel)
-                    3 -> JarvisChatScreen(viewModel = viewModel)
-                    4 -> JarvisToolsScreen()
+                ActiveTabHost(
+                    visitedTabs = visitedTabs,
+                    selectedTab = selectedTab
+                ) { tabIndex ->
+                    when (tabIndex) {
+                        0 -> JarvisDashboardScreen(
+                            viewModel = viewModel,
+                            onRequestMediaProjection = onRequestMediaProjection
+                        )
+                        1 -> JarvisSandboxScreen(viewModel = viewModel)
+                        2 -> JarvisTermuxScreen(viewModel = viewModel)
+                        3 -> JarvisChatScreen(viewModel = viewModel)
+                        4 -> JarvisToolsScreen()
+                    }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Custom Layout untuk perpindahan tab instan (0ms stutter):
+ * - Tab baru baru di-compose saat pertama kali dikunjungi (startup tetap ringan).
+ * - Tab yang sudah dikunjungi tetap menjaga scroll position & remember cache,
+ *   tetapi hanya tab aktif yang di-measure dan di-place (0 biaya GPU/layout utk tab pasif).
+ */
+@Composable
+private fun ActiveTabHost(
+    visitedTabs: List<Int>,
+    selectedTab: Int,
+    content: @Composable (Int) -> Unit
+) {
+    val activeSlotIndex = visitedTabs.indexOf(selectedTab).coerceAtLeast(0)
+    Layout(
+        content = {
+            visitedTabs.forEach { tab ->
+                key(tab) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        content(tab)
+                    }
+                }
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    ) { measurables, constraints ->
+        val activePlaceable = measurables.getOrNull(activeSlotIndex)?.measure(constraints)
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            activePlaceable?.place(0, 0)
         }
     }
 }
@@ -224,7 +274,8 @@ fun JarvisMainApp(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun JarvisTopBar(viewModel: JarvisViewModel) {
-    val isServerRunning by viewModel.isServerRunning.collectAsState()
+    val isServerRunning by viewModel.isServerRunning.collectAsStateWithLifecycle()
+    val onToggleServer = remember(viewModel) { { _: Boolean -> viewModel.toggleServer() } }
     Column {
         TopAppBar(
             title = {
@@ -264,7 +315,7 @@ private fun JarvisTopBar(viewModel: JarvisViewModel) {
                     )
                     Switch(
                         checked = isServerRunning,
-                        onCheckedChange = { viewModel.toggleServer() },
+                        onCheckedChange = onToggleServer,
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = JarvisEmerald,

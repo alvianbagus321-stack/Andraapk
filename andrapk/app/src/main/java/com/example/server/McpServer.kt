@@ -114,10 +114,11 @@ object McpServer {
 
     private fun handleToolsList(): JSONObject {
         val toolsJson = JSONArray()
-        val registered = ToolManager.tools.value.associateBy { it.id.lowercase() }
+        val enabledTools = ToolManager.tools.value.filter { it.isEnabled }
+        val registered = enabledTools.associateBy { it.id.lowercase() }
 
-        // Semua tool terdaftar (built-in + custom buatan pengguna/AI)
-        for (tool in ToolManager.tools.value) {
+        // Semua tool aktif (built-in + custom + GitHub + MCP)
+        for (tool in enabledTools) {
             toolsJson.put(toolToMcp(tool))
         }
         // Meta-tools yang dieksekusi khusus oleh AiChatService (tambahkan bila belum terdaftar)
@@ -142,11 +143,23 @@ object McpServer {
         val text = result.result ?: result.message
             ?: if (result.status == "ok") "Berhasil (OK)" else "Gagal"
 
+        val contentArr = JSONArray().put(JSONObject().apply {
+            put("type", "text")
+            put("text", text.take(12000))
+        })
+
+        // Jika tool menghasilkan tangkapan layar (screenshot / vm_screenshot), sertakan blok image MCP asli
+        val screenshotB64 = result.extra["screenshot_b64"] as? String
+        if (!screenshotB64.isNullOrBlank()) {
+            contentArr.put(JSONObject().apply {
+                put("type", "image")
+                put("data", screenshotB64)
+                put("mimeType", "image/jpeg")
+            })
+        }
+
         return JSONObject().apply {
-            put("content", JSONArray().put(JSONObject().apply {
-                put("type", "text")
-                put("text", text.take(12000))
-            }))
+            put("content", contentArr)
             put("isError", result.status != "ok")
         }
     }
@@ -190,6 +203,13 @@ object McpServer {
                     is Int, is Long, is Double -> {
                         prop.put("type", "number")
                         prop.put("description", "contoh: $value")
+                    }
+                    is JSONArray -> {
+                        prop.put("type", "array")
+                        prop.put("items", JSONObject().put("type", "string"))
+                    }
+                    is JSONObject -> {
+                        prop.put("type", "object")
                     }
                     else -> {
                         prop.put("type", "string")

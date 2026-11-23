@@ -1,12 +1,16 @@
 package com.example.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,44 +37,787 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.AiPermissionMode
 import com.example.model.ChatMessage
 import com.example.model.ChatSender
-import com.example.model.AiPermissionMode
 import com.example.service.JarvisVoiceManager
 import com.example.service.ToolManager
+import com.example.service.VmState
 import com.example.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
+private val ChatBorder = BorderStroke(1.dp, JarvisBorder)
+private val ChatBorderStrong = BorderStroke(1.dp, JarvisBorderStrong)
+
+private val ChatTimeFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+}
+
+/**
+ * Layar Percakapan AI dengan arsitektur isolasi state ketat (60fps):
+ * - Input teks & lampiran terisolasi di ChatComposerFooter sehingga mengetik TIDAK PERNAH me-recompose LazyColumn.
+ * - Status berpikir & live thought terisolasi di ChatLiveProgressBanner.
+ * - Header & sub-header terisolasi masing-masing; dialog hanya mengoleksi StateFlow saat dibuka.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun JarvisChatScreen(viewModel: JarvisViewModel) {
     val context = LocalContext.current
-    val messages by viewModel.chatMessages.collectAsState()
-    val isThinking by viewModel.isChatAiThinking.collectAsState()
-    val statusText by viewModel.chatStatusText.collectAsState()
 
-    val apiKey by viewModel.chatApiKey.collectAsState()
-    val baseUrl by viewModel.chatBaseUrl.collectAsState()
-    val modelName by viewModel.chatModelName.collectAsState()
-    val permissionMode by ToolManager.permissionMode.collectAsState()
-    val customPerms by ToolManager.customPermissions.collectAsState()
+    var showConfigDialog by remember { mutableStateOf(false) }
+    var openConfigFreeTab by remember { mutableStateOf(false) }
+    var showPermsDialog by remember { mutableStateOf(false) }
+    var showCustomPermsDialog by remember { mutableStateOf(false) }
+    var showVoiceCallDialog by remember { mutableStateOf(false) }
+    var showSessionDialog by remember { mutableStateOf(false) }
+    var showThinkingHistoryDialog by remember { mutableStateOf(false) }
+    var showTerminalDialog by remember { mutableStateOf(false) }
+    var showVmViewerDialog by remember { mutableStateOf(false) }
+    var codeToPreview by remember { mutableStateOf<CodePreviewPayload?>(null) }
 
-    val isVoiceSpeaking by JarvisVoiceManager.isSpeaking.collectAsState()
-    val isVoiceListening by JarvisVoiceManager.isListening.collectAsState()
-    val autoReadEnabled by JarvisVoiceManager.autoReadEnabled.collectAsState()
-    val isVoiceCallActive by JarvisVoiceManager.isVoiceCallActive.collectAsState()
-    val isHotwordEnabled by viewModel.isHotwordEnabled.collectAsState()
-    val liveThought by viewModel.liveThought.collectAsState()
+    var pendingAudioAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            pendingAudioAction?.invoke()
+        } else {
+            Toast.makeText(context, "Izin mikrofon diperlukan untuk fitur suara", Toast.LENGTH_SHORT).show()
+        }
+        pendingAudioAction = null
+    }
 
-    val sessions by viewModel.chatSessions.collectAsState()
-    val currentSession by viewModel.currentSession.collectAsState()
+    val checkAndRunAudioAction = remember(context) {
+        { action: () -> Unit ->
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                action()
+            } else {
+                pendingAudioAction = action
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    val onOpenConfig = remember {
+        { freeTab: Boolean ->
+            openConfigFreeTab = freeTab
+            showConfigDialog = true
+        }
+    }
+    val onOpenPerms = remember { { showPermsDialog = true } }
+    val onOpenVmViewer = remember { { showVmViewerDialog = true } }
+    val onStartVoiceCall = remember(viewModel, checkAndRunAudioAction) {
+        {
+            checkAndRunAudioAction {
+                showVoiceCallDialog = true
+                viewModel.startVoiceCall()
+            }
+        }
+    }
+    val onOpenSessions = remember { { showSessionDialog = true } }
+    val onOpenTerminal = remember { { showTerminalDialog = true } }
+    val onOpenThinkingHistory = remember { { showThinkingHistoryDialog = true } }
+    val onPreviewCode = remember { { payload: CodePreviewPayload -> codeToPreview = payload } }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(JarvisBackground)
+    ) {
+        ChatTopHeader(
+            viewModel = viewModel,
+            checkAndRunAudioAction = checkAndRunAudioAction,
+            onOpenConfig = onOpenConfig,
+            onOpenPerms = onOpenPerms,
+            onOpenVmViewer = onOpenVmViewer,
+            onStartVoiceCall = onStartVoiceCall
+        )
+
+        ChatSubHeader(
+            viewModel = viewModel,
+            onOpenSessions = onOpenSessions,
+            onOpenTerminal = onOpenTerminal,
+            onOpenThinkingHistory = onOpenThinkingHistory
+        )
+
+        ChatAgentPlanSection()
+
+        ChatMessagesList(
+            viewModel = viewModel,
+            onPreviewCode = onPreviewCode,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        )
+
+        ChatVmInlineSection(
+            viewModel = viewModel,
+            onOpenViewer = onOpenVmViewer
+        )
+
+        ChatLiveProgressBanner(viewModel = viewModel)
+
+        ChatComposerFooter(
+            viewModel = viewModel,
+            checkAndRunAudioAction = checkAndRunAudioAction
+        )
+    }
+
+    ChatDialogsHost(
+        viewModel = viewModel,
+        showVoiceCallDialog = showVoiceCallDialog,
+        onDismissVoiceCall = {
+            showVoiceCallDialog = false
+            viewModel.endVoiceCall()
+        },
+        showConfigDialog = showConfigDialog,
+        openConfigFreeTab = openConfigFreeTab,
+        onDismissConfig = { showConfigDialog = false },
+        codeToPreview = codeToPreview,
+        onDismissCodePreview = { codeToPreview = null },
+        showVmViewerDialog = showVmViewerDialog,
+        onDismissVmViewer = { showVmViewerDialog = false },
+        showPermsDialog = showPermsDialog,
+        onDismissPerms = { showPermsDialog = false },
+        onOpenCustomPerms = {
+            showPermsDialog = false
+            showCustomPermsDialog = true
+        },
+        showCustomPermsDialog = showCustomPermsDialog,
+        onDismissCustomPerms = { showCustomPermsDialog = false },
+        showSessionDialog = showSessionDialog,
+        onDismissSession = { showSessionDialog = false },
+        showThinkingHistoryDialog = showThinkingHistoryDialog,
+        onDismissThinkingHistory = { showThinkingHistoryDialog = false },
+        showTerminalDialog = showTerminalDialog,
+        onDismissTerminal = { showTerminalDialog = false }
+    )
+}
+
+@Composable
+private fun ChatTopHeader(
+    viewModel: JarvisViewModel,
+    checkAndRunAudioAction: (() -> Unit) -> Unit,
+    onOpenConfig: (Boolean) -> Unit,
+    onOpenPerms: () -> Unit,
+    onOpenVmViewer: () -> Unit,
+    onStartVoiceCall: () -> Unit
+) {
+    val context = LocalContext.current
+    val isThinking by viewModel.isChatAiThinking.collectAsStateWithLifecycle()
+    val baseUrl by viewModel.chatBaseUrl.collectAsStateWithLifecycle()
+    val modelName by viewModel.chatModelName.collectAsStateWithLifecycle()
+    val permissionMode by ToolManager.permissionMode.collectAsStateWithLifecycle()
+    val autoReadEnabled by JarvisVoiceManager.autoReadEnabled.collectAsStateWithLifecycle()
+    val isHotwordEnabled by viewModel.isHotwordEnabled.collectAsStateWithLifecycle()
+    val vmStatus by com.example.service.VirtualComputerManager.status.collectAsStateWithLifecycle()
+    val vmPendingApproval by com.example.service.VirtualComputerManager.pendingApproval.collectAsStateWithLifecycle()
+
+    val quotaRevision by com.example.data.FreeQuotaManager.revision.collectAsStateWithLifecycle()
+    val orHighTier by com.example.data.FreeQuotaManager.openRouterHighTier.collectAsStateWithLifecycle()
+    val enforceLimit by com.example.data.FreeQuotaManager.enforceLocalLimit.collectAsStateWithLifecycle()
+    var chatQuotaTickMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val chatFreeQuota = remember(baseUrl, modelName, quotaRevision, orHighTier, enforceLimit, chatQuotaTickMs) {
+        com.example.data.FreeQuotaManager.getStatus(baseUrl, modelName, chatQuotaTickMs)
+    }
+    LaunchedEffect(baseUrl, modelName, chatFreeQuota?.isBlocked) {
+        if (chatFreeQuota?.isBlocked == true) {
+            while (true) {
+                kotlinx.coroutines.delay(1_000L)
+                chatQuotaTickMs = System.currentTimeMillis()
+            }
+        }
+    }
+
+    Surface(
+        color = JarvisSurface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (isThinking) JarvisAmber else JarvisEmerald)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { onOpenConfig(false) }
+                        ) {
+                            Text(
+                                text = if (modelName.isNotBlank()) modelName else "Pilih model",
+                                color = JarvisTextPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Icon(
+                                Icons.Default.ArrowDropDown,
+                                contentDescription = null,
+                                tint = JarvisTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            chatFreeQuota?.let { fq ->
+                                val badgeColor = when {
+                                    fq.isBlocked -> JarvisRed
+                                    fq.periodRemainingFraction <= 0.2f -> JarvisAmber
+                                    else -> JarvisEmerald
+                                }
+                                Text(
+                                    text = if (fq.isBlocked) {
+                                        "Jeda ${com.example.data.FreeQuotaManager.formatCountdown(fq.activeWaitMs)}"
+                                    } else {
+                                        "${fq.periodRemaining}/${fq.periodLimit}"
+                                    },
+                                    color = badgeColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 1,
+                                    modifier = Modifier
+                                        .clickable { onOpenConfig(true) }
+                                        .testTag("chat_free_quota_badge")
+                                )
+                                Text(text = "·", color = JarvisTextTertiary, fontSize = 10.sp)
+                            }
+                            val permLabel = when (permissionMode) {
+                                AiPermissionMode.SANDBOXED -> "Sandbox"
+                                AiPermissionMode.LOW_RISK -> "Terbatas"
+                                AiPermissionMode.FULL_ACCESS -> "Akses penuh"
+                                AiPermissionMode.CUSTOM -> "Izin kustom"
+                            }
+                            Text(
+                                text = permLabel,
+                                color = JarvisTextSecondary,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.clickable(onClick = onOpenPerms)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val vmRunning = vmStatus.state == VmState.RUNNING
+                    val vmPending = vmPendingApproval != null || vmStatus.state == VmState.PROVISIONING
+                    IconButton(
+                        onClick = onOpenVmViewer,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                when {
+                                    vmRunning -> JarvisEmerald.copy(alpha = 0.14f)
+                                    vmPending -> JarvisAmber.copy(alpha = 0.14f)
+                                    else -> Color.Transparent
+                                }
+                            )
+                            .testTag("chat_vm_viewer_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Computer,
+                            contentDescription = "Komputer Virtual",
+                            tint = when {
+                                vmRunning -> JarvisEmerald
+                                vmPending -> JarvisAmber
+                                else -> JarvisTextSecondary
+                            },
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            checkAndRunAudioAction {
+                                val newState = viewModel.toggleHotword(context)
+                                Toast.makeText(
+                                    context,
+                                    if (newState) "Asisten suara latar belakang aktif"
+                                    else "Asisten suara latar belakang nonaktif",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isHotwordEnabled) JarvisEmerald.copy(alpha = 0.14f) else Color.Transparent)
+                            .testTag("chat_background_hotword_toggle")
+                    ) {
+                        Icon(
+                            Icons.Default.RecordVoiceOver,
+                            contentDescription = "Asisten suara latar belakang",
+                            tint = if (isHotwordEnabled) JarvisEmerald else JarvisTextSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onStartVoiceCall,
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("chat_voice_call_button")
+                    ) {
+                        Icon(
+                            Icons.Default.GraphicEq,
+                            contentDescription = "Mode percakapan suara",
+                            tint = JarvisTextSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            viewModel.toggleAutoRead()
+                            Toast.makeText(
+                                context,
+                                if (!autoReadEnabled) "Baca otomatis aktif" else "Baca otomatis nonaktif",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (autoReadEnabled) JarvisCyan.copy(alpha = 0.14f) else Color.Transparent)
+                            .testTag("chat_auto_read_toggle")
+                    ) {
+                        Icon(
+                            imageVector = if (autoReadEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                            contentDescription = "Baca balasan otomatis",
+                            tint = if (autoReadEnabled) JarvisCyan else JarvisTextSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { onOpenConfig(false) },
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("chat_config_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Pengaturan model dan API",
+                            tint = JarvisTextSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.clearChat() },
+                        modifier = Modifier
+                            .size(34.dp)
+                            .testTag("chat_clear_button")
+                    ) {
+                        Icon(
+                            Icons.Default.DeleteSweep,
+                            contentDescription = "Bersihkan percakapan",
+                            tint = JarvisTextSecondary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
+            }
+            HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+        }
+    }
+}
+
+@Composable
+private fun ChatSubHeader(
+    viewModel: JarvisViewModel,
+    onOpenSessions: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    onOpenThinkingHistory: () -> Unit
+) {
+    val context = LocalContext.current
+    val currentSession by viewModel.currentSession.collectAsStateWithLifecycle()
+    val terminalEntries by com.example.service.AgentTerminalManager.entries.collectAsStateWithLifecycle()
+    val termCount = terminalEntries.size
+
+    Surface(
+        color = JarvisBackground,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = JarvisSurface,
+                    border = ChatBorder,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onOpenSessions)
+                        .testTag("chat_open_sessions_pill")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Forum,
+                            contentDescription = null,
+                            tint = JarvisTextSecondary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = currentSession?.title ?: "Sesi Percakapan",
+                            color = JarvisTextPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Icon(
+                            Icons.Default.ArrowDropDown,
+                            contentDescription = null,
+                            tint = JarvisTextSecondary,
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = JarvisSurface,
+                        border = ChatBorder,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                viewModel.createNewSession()
+                                Toast.makeText(context, "Sesi baru dibuat", Toast.LENGTH_SHORT).show()
+                            }
+                            .testTag("chat_quick_new_session")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Sesi baru",
+                                tint = JarvisTextPrimary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Sesi",
+                                color = JarvisTextPrimary,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (termCount > 0) JarvisCyan.copy(alpha = 0.12f) else JarvisSurface,
+                        border = if (termCount > 0) BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.45f)) else ChatBorder,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenTerminal)
+                            .testTag("chat_terminal_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Terminal,
+                                contentDescription = "Terminal AI",
+                                tint = if (termCount > 0) JarvisCyan else JarvisTextSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (termCount > 0) "Term ($termCount)" else "Terminal",
+                                color = if (termCount > 0) JarvisCyan else JarvisTextSecondary,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = JarvisSurface,
+                        border = ChatBorder,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onOpenThinkingHistory)
+                            .testTag("chat_thinking_history_button")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Psychology,
+                                contentDescription = "Log penalaran",
+                                tint = JarvisTextSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Log Pikir",
+                                color = JarvisTextSecondary,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+        }
+    }
+}
+
+@Composable
+private fun ChatAgentPlanSection() {
+    val agentPlanSteps by com.example.service.AgentWorkspaceTools.planSteps.collectAsStateWithLifecycle()
+    val onClearPlan = remember { { com.example.service.AgentWorkspaceTools.clearPlan() } }
+    AgentPlanBanner(
+        steps = agentPlanSteps,
+        onClear = onClearPlan
+    )
+}
+
+@Composable
+private fun ChatMessagesList(
+    viewModel: JarvisViewModel,
+    onPreviewCode: (CodePreviewPayload) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.scrollToItem(messages.size - 1)
+        }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier.padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)
+    ) {
+        items(
+            items = messages,
+            key = { it.id },
+            contentType = { it.sender }
+        ) { msg ->
+            ChatBubble(
+                message = msg,
+                onPreviewCode = onPreviewCode
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatVmInlineSection(
+    viewModel: JarvisViewModel,
+    onOpenViewer: () -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val vmStatus by com.example.service.VirtualComputerManager.status.collectAsStateWithLifecycle()
+    val vmPendingApproval by com.example.service.VirtualComputerManager.pendingApproval.collectAsStateWithLifecycle()
+
+    vmPendingApproval?.let { req ->
+        VmApprovalChatCard(
+            request = req,
+            onApprove = {
+                onOpenViewer()
+                com.example.service.VirtualComputerManager.approveAndStart(context) { ok, msg ->
+                    if (ok && !viewModel.isChatAiThinking.value) {
+                        viewModel.sendChatMessage(
+                            userText = "Saya sudah menyetujui dan Komputer Virtual (${req.distro.displayName}) sekarang sudah aktif. Silakan lanjutkan tugasmu di Komputer Virtual."
+                        )
+                    } else if (!ok) {
+                        coroutineScope.launch(Dispatchers.Main) {
+                            Toast.makeText(context, msg.take(120), Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            },
+            onReject = {
+                com.example.service.VirtualComputerManager.rejectApproval("Ditolak oleh pengguna di Chat")
+                if (!viewModel.isChatAiThinking.value) {
+                    viewModel.sendChatMessage(
+                        userText = "Saya menolak permintaan pembuatan Komputer Virtual untuk saat ini. Tolong selesaikan tanpa Komputer Virtual atau tanyakan alternatif lain."
+                    )
+                }
+            }
+        )
+    }
+
+    if (vmPendingApproval == null && (vmStatus.state == VmState.RUNNING || vmStatus.state == VmState.PROVISIONING)) {
+        VmActiveStatusBar(
+            status = vmStatus,
+            onOpenViewer = onOpenViewer,
+            onStop = {
+                coroutineScope.launch(Dispatchers.IO) {
+                    com.example.service.VirtualComputerManager.stopVm()
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Satu status bar ringkas & presisi saat AI memproses (menggantikan 2 banner animasi ganda sebelumnya).
+ */
+@Composable
+private fun ChatLiveProgressBanner(viewModel: JarvisViewModel) {
+    val isThinking by viewModel.isChatAiThinking.collectAsStateWithLifecycle()
+    if (!isThinking) return
+
+    val statusText by viewModel.chatStatusText.collectAsStateWithLifecycle()
+    val liveThought by viewModel.liveThought.collectAsStateWithLifecycle()
+    var showThought by remember { mutableStateOf(false) }
+
+    Surface(
+        color = JarvisSurface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = JarvisCyan
+                )
+                Text(
+                    text = statusText.ifBlank { "AI sedang memproses..." },
+                    color = JarvisTextPrimary,
+                    fontSize = 11.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!liveThought.isNullOrBlank()) {
+                    Text(
+                        text = if (showThought) "Sembunyikan" else "Penalaran",
+                        color = JarvisCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { showThought = !showThought }
+                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = JarvisRed.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, JarvisRed.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { viewModel.stopAiExecution() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = "Hentikan AI", tint = JarvisRed, modifier = Modifier.size(13.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("Hentikan", color = JarvisRed, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            if (showThought && !liveThought.isNullOrBlank()) {
+                Text(
+                    text = liveThought.orEmpty(),
+                    color = JarvisTextSecondary,
+                    fontSize = 10.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 14.5.sp,
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(JarvisBackground)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Composer teks terisolasi — perubahan inputText saat mengetik hanya me-recompose komponen ini.
+ */
+@Composable
+private fun ChatComposerFooter(
+    viewModel: JarvisViewModel,
+    checkAndRunAudioAction: (() -> Unit) -> Unit
+) {
+    val context = LocalContext.current
+    val isThinking by viewModel.isChatAiThinking.collectAsStateWithLifecycle()
+    val isVoiceListening by JarvisVoiceManager.isListening.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
     var selectedAttachmentUri by remember { mutableStateOf<String?>(null) }
@@ -93,948 +840,257 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
                         }
                     }
                 }
-            } catch (e: Exception) {
-                // Ignore query error
+            } catch (_: Exception) {
             }
             selectedAttachmentName = name
-            Toast.makeText(context, "Terlampir: $name 📎", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Terlampir: $name", Toast.LENGTH_SHORT).show()
         }
     }
 
-    var showConfigDialog by remember { mutableStateOf(false) }
-    var openConfigFreeTab by remember { mutableStateOf(false) }
-    var showPermsDialog by remember { mutableStateOf(false) }
-
-    // Pemantau kuota model gratis aktif di layar Chat
-    val quotaRevision by com.example.data.FreeQuotaManager.revision.collectAsState()
-    val orHighTier by com.example.data.FreeQuotaManager.openRouterHighTier.collectAsState()
-    val enforceLimit by com.example.data.FreeQuotaManager.enforceLocalLimit.collectAsState()
-    var chatQuotaTickMs by remember { mutableStateOf(System.currentTimeMillis()) }
-    val chatFreeQuota = remember(baseUrl, modelName, quotaRevision, orHighTier, enforceLimit, chatQuotaTickMs) {
-        com.example.data.FreeQuotaManager.getStatus(baseUrl, modelName, chatQuotaTickMs)
-    }
-    LaunchedEffect(baseUrl, modelName, chatFreeQuota?.isBlocked) {
-        if (chatFreeQuota?.isBlocked == true) {
-            while (true) {
-                kotlinx.coroutines.delay(1_000L)
-                chatQuotaTickMs = System.currentTimeMillis()
-            }
-        }
-    }
-    var showCustomPermsDialog by remember { mutableStateOf(false) }
-    var showVoiceCallDialog by remember { mutableStateOf(false) }
-    var showSessionDialog by remember { mutableStateOf(false) }
-    var showThinkingHistoryDialog by remember { mutableStateOf(false) }
-    var showTerminalDialog by remember { mutableStateOf(false) }
-    var showVmViewerDialog by remember { mutableStateOf(false) }
-    var htmlToPreview by remember { mutableStateOf<String?>(null) }
-
-    val agentPlanSteps by com.example.service.AgentWorkspaceTools.planSteps.collectAsState()
-    val terminalEntries by com.example.service.AgentTerminalManager.entries.collectAsState()
-    val vmStatus by com.example.service.VirtualComputerManager.status.collectAsState()
-    val vmPendingApproval by com.example.service.VirtualComputerManager.pendingApproval.collectAsState()
-
-    var pendingAudioAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-    val audioPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            pendingAudioAction?.invoke()
-        } else {
-            Toast.makeText(context, "Izin mikrofon diperlukan untuk fitur Voice Mode", Toast.LENGTH_SHORT).show()
-        }
-        pendingAudioAction = null
-    }
-
-    fun checkAndRunAudioAction(action: () -> Unit) {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            action()
-        } else {
-            pendingAudioAction = action
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    fun dispatchCurrentMessage() {
+        if ((inputText.isNotBlank() || selectedAttachmentUri != null) && !isThinking) {
+            viewModel.sendChatMessage(
+                userText = inputText,
+                attachmentUri = selectedAttachmentUri,
+                attachmentName = selectedAttachmentName,
+                attachmentMimeType = selectedAttachmentMimeType
+            )
+            inputText = ""
+            selectedAttachmentUri = null
+            selectedAttachmentName = null
+            selectedAttachmentMimeType = null
         }
     }
 
-    val listState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
-
-    LaunchedEffect(messages.size, isThinking) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(JarvisBackground)
+    Surface(
+        color = JarvisSurface,
+        tonalElevation = 0.dp,
+        modifier = Modifier.fillMaxWidth()
     ) {
-        // Chat Header — compact, fits narrow screens without clipping trailing actions
-        Surface(
-            color = JarvisSurface,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (selectedAttachmentUri != null) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = JarvisSurfaceVariant,
+                    border = BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.45f)),
                     modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(if (isThinking) JarvisAmber else JarvisEmerald)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable {
-                                    openConfigFreeTab = false
-                                    showConfigDialog = true
-                                }
-                            ) {
-                                Text(
-                                    text = if (modelName.isNotBlank()) modelName else "Pilih model",
-                                    color = JarvisTextPrimary,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Icon(
-                                    Icons.Default.ArrowDropDown,
-                                    contentDescription = null,
-                                    tint = JarvisTextSecondary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                chatFreeQuota?.let { fq ->
-                                    val badgeColor = when {
-                                        fq.isBlocked -> JarvisRed
-                                        fq.periodRemainingFraction <= 0.2f -> JarvisAmber
-                                        else -> JarvisEmerald
-                                    }
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = badgeColor.copy(alpha = 0.14f),
-                                        modifier = Modifier
-                                            .clickable {
-                                                openConfigFreeTab = true
-                                                showConfigDialog = true
-                                            }
-                                            .testTag("chat_free_quota_badge")
-                                    ) {
-                                        Text(
-                                            text = if (fq.isBlocked) {
-                                                "Jeda ${com.example.data.FreeQuotaManager.formatCountdown(fq.activeWaitMs)}"
-                                            } else {
-                                                "${fq.periodRemaining}/${fq.periodLimit}"
-                                            },
-                                            color = badgeColor,
-                                            fontSize = 9.5.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            fontFamily = FontFamily.Monospace,
-                                            maxLines = 1,
-                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                        )
-                                    }
-                                }
-                                val permLabel = when (permissionMode) {
-                                    AiPermissionMode.SANDBOXED -> "Sandbox"
-                                    AiPermissionMode.LOW_RISK -> "Terbatas"
-                                    AiPermissionMode.FULL_ACCESS -> "Akses penuh"
-                                    AiPermissionMode.CUSTOM -> "Izin kustom"
-                                }
-                                Text(
-                                    text = permLabel,
-                                    color = JarvisTextSecondary,
-                                    fontSize = 10.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.clickable { showPermsDialog = true }
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Virtual Computer Live Viewer button
-                        val vmRunning = vmStatus.state == com.example.service.VmState.RUNNING
-                        val vmPending = vmPendingApproval != null || vmStatus.state == com.example.service.VmState.PROVISIONING
-                        IconButton(
-                            onClick = { showVmViewerDialog = true },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    when {
-                                        vmRunning -> JarvisEmerald.copy(alpha = 0.14f)
-                                        vmPending -> JarvisAmber.copy(alpha = 0.14f)
-                                        else -> Color.Transparent
-                                    }
-                                )
-                                .testTag("chat_vm_viewer_button")
-                        ) {
-                            Icon(
-                                Icons.Default.Computer,
-                                contentDescription = "Komputer Virtual",
-                                tint = when {
-                                    vmRunning -> JarvisEmerald
-                                    vmPending -> JarvisAmber
-                                    else -> JarvisTextSecondary
-                                },
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-
-                        // Background hotword assistant toggle
-                        IconButton(
-                            onClick = {
-                                checkAndRunAudioAction {
-                                    val newState = viewModel.toggleHotword(context)
-                                    Toast.makeText(
-                                        context,
-                                        if (newState) "Asisten suara latar belakang aktif"
-                                        else "Asisten suara latar belakang nonaktif",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    if (isHotwordEnabled) JarvisEmerald.copy(alpha = 0.14f)
-                                    else Color.Transparent
-                                )
-                                .testTag("chat_background_hotword_toggle")
-                        ) {
-                            Icon(
-                                Icons.Default.RecordVoiceOver,
-                                contentDescription = "Asisten suara latar belakang",
-                                tint = if (isHotwordEnabled) JarvisEmerald else JarvisTextSecondary,
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-
-                        // Live Voice Call Mode
-                        IconButton(
-                            onClick = {
-                                checkAndRunAudioAction {
-                                    showVoiceCallDialog = true
-                                    viewModel.startVoiceCall()
-                                }
-                            },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("chat_voice_call_button")
-                        ) {
-                            Icon(
-                                Icons.Default.GraphicEq,
-                                contentDescription = "Mode percakapan suara",
-                                tint = JarvisTextSecondary,
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-
-                        // Auto-TTS Read Aloud Toggle
-                        IconButton(
-                            onClick = {
-                                viewModel.toggleAutoRead()
-                                Toast.makeText(
-                                    context,
-                                    if (!autoReadEnabled) "Baca otomatis aktif" else "Baca otomatis nonaktif",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    if (autoReadEnabled) JarvisCyan.copy(alpha = 0.14f)
-                                    else Color.Transparent
-                                )
-                                .testTag("chat_auto_read_toggle")
-                        ) {
-                            Icon(
-                                imageVector = if (autoReadEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                                contentDescription = "Baca balasan otomatis",
-                                tint = if (autoReadEnabled) JarvisCyan else JarvisTextSecondary,
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-
-                        // AI Config Dialog
-                        IconButton(
-                            onClick = {
-                                openConfigFreeTab = false
-                                showConfigDialog = true
-                            },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("chat_config_button")
-                        ) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "Pengaturan model dan API",
-                                tint = JarvisTextSecondary,
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-
-                        // Clear current chat
-                        IconButton(
-                            onClick = { viewModel.clearChat() },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("chat_clear_button")
-                        ) {
-                            Icon(
-                                Icons.Default.DeleteSweep,
-                                contentDescription = "Bersihkan percakapan",
-                                tint = JarvisTextSecondary,
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-                    }
-                }
-                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
-            }
-        }
-
-        // Sub-Header: Session Selector, New Session, and Reasoning Log
-        Surface(
-            color = JarvisBackground,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    // Session Dropdown / Selector
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = JarvisSurface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder),
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { showSessionDialog = true }
-                            .testTag("chat_open_sessions_pill")
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Forum,
-                                contentDescription = null,
-                                tint = JarvisTextSecondary,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = currentSession?.title ?: "Sesi Percakapan",
-                                color = JarvisTextPrimary,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Icon(
-                                Icons.Default.ArrowDropDown,
-                                contentDescription = null,
-                                tint = JarvisTextSecondary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        // New Session Quick Button (fixed duplicate "+ + Sesi")
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = JarvisSurface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    viewModel.createNewSession()
-                                    Toast.makeText(context, "Sesi baru dibuat", Toast.LENGTH_SHORT).show()
-                                }
-                                .testTag("chat_quick_new_session")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = "Sesi baru",
-                                    tint = JarvisTextPrimary,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Sesi",
-                                    color = JarvisTextPrimary,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-
-                        // Live AI Terminal Button
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (terminalEntries.isNotEmpty()) JarvisCyan.copy(alpha = 0.12f) else JarvisSurface,
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                if (terminalEntries.isNotEmpty()) JarvisCyan.copy(alpha = 0.5f) else JarvisBorder
-                            ),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showTerminalDialog = true }
-                                .testTag("chat_terminal_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Terminal,
-                                    contentDescription = "Terminal AI",
-                                    tint = if (terminalEntries.isNotEmpty()) JarvisCyan else JarvisTextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = if (terminalEntries.isNotEmpty()) "Term (${terminalEntries.size})" else "Terminal",
-                                    color = if (terminalEntries.isNotEmpty()) JarvisCyan else JarvisTextSecondary,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-
-                        // Reasoning History Button
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = JarvisSurface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showThinkingHistoryDialog = true }
-                                .testTag("chat_thinking_history_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Psychology,
-                                    contentDescription = "Log penalaran",
-                                    tint = JarvisTextSecondary,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Log Pikir",
-                                    color = JarvisTextSecondary,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
-                }
-                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
-            }
-        }
-
-        // Active Status Bar when AI is thinking or executing local actions
-        AnimatedVisibility(visible = isThinking) {
-            Surface(
-                color = JarvisSurfaceVariant,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = JarvisCyan
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (statusText.isNotBlank()) statusText else "AI sedang memproses...",
-                            color = JarvisCyan,
-                            fontSize = 12.sp,
-                            maxLines = 1
-                        )
-                    }
-
-                    // STOP AI Button
-                    Button(
-                        onClick = { viewModel.stopAiExecution() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = JarvisRed,
-                            contentColor = Color.White
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Icon(Icons.Default.Stop, contentDescription = "Hentikan AI", modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("STOP AI", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-
-        // Live Agent Task Plan Checklist (when AI sets a multi-step plan)
-        AgentPlanBanner(
-            steps = agentPlanSteps,
-            onClear = { com.example.service.AgentWorkspaceTools.clearPlan() }
-        )
-
-        // Messages List
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)
-        ) {
-            items(messages, key = { it.id }) { msg ->
-                ChatBubble(
-                    message = msg,
-                    onPreviewHtml = { htmlToPreview = it }
-                )
-            }
-        }
-
-        // Selected Attachment Preview Chip
-        if (selectedAttachmentUri != null) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = JarvisSurfaceVariant,
-                border = androidx.compose.foundation.BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.5f)),
-                modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            imageVector = if (selectedAttachmentMimeType?.startsWith("image/") == true) Icons.Default.Image else Icons.Default.InsertDriveFile,
-                            contentDescription = "Lampiran",
-                            tint = JarvisCyan,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = selectedAttachmentName ?: "Lampiran dipilih",
-                            color = JarvisTextPrimary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            selectedAttachmentUri = null
-                            selectedAttachmentName = null
-                            selectedAttachmentMimeType = null
-                        },
-                        modifier = Modifier.size(24.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Hapus Lampiran",
-                            tint = JarvisRed,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Virtual Computer Approval Card (inline in Chat when AI requests VM creation)
-        vmPendingApproval?.let { req ->
-            VmApprovalChatCard(
-                request = req,
-                onApprove = {
-                    showVmViewerDialog = true
-                    com.example.service.VirtualComputerManager.approveAndStart(context) { ok, msg ->
-                        if (ok && !isThinking) {
-                            viewModel.sendChatMessage(
-                                userText = "Saya sudah menyetujui dan Komputer Virtual (${req.distro.displayName}) sekarang sudah aktif. Silakan lanjutkan tugasmu di Komputer Virtual."
-                            )
-                        } else if (!ok) {
-                            coroutineScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                                Toast.makeText(context, msg.take(120), Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    }
-                },
-                onReject = {
-                    com.example.service.VirtualComputerManager.rejectApproval("Ditolak oleh pengguna di Chat")
-                    if (!isThinking) {
-                        viewModel.sendChatMessage(
-                            userText = "Saya menolak permintaan pembuatan Komputer Virtual untuk saat ini. Tolong selesaikan tanpa Komputer Virtual atau tanyakan alternatif lain."
-                        )
-                    }
-                }
-            )
-        }
-
-        // Compact Active VM Bar when provisioning or running
-        if (vmPendingApproval == null && (vmStatus.state == com.example.service.VmState.RUNNING || vmStatus.state == com.example.service.VmState.PROVISIONING)) {
-            VmActiveStatusBar(
-                status = vmStatus,
-                onOpenViewer = { showVmViewerDialog = true },
-                onStop = {
-                    coroutineScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                        com.example.service.VirtualComputerManager.stopVm()
-                    }
-                }
-            )
-        }
-
-        // Input Bar Container
-        Surface(
-            color = JarvisSurface,
-            tonalElevation = 6.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // Prominent Stop Banner when AI is actively thinking/processing
-                AnimatedVisibility(visible = isThinking) {
-                    Surface(
-                        color = JarvisRed.copy(alpha = 0.18f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, JarvisRed.copy(alpha = 0.7f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.stopAiExecution() }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier.weight(1f)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = JarvisRed
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "AI Sedang Berjalan: ${statusText.ifBlank { "Memproses task..." }}",
-                                    color = JarvisRed,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = JarvisRed,
-                                modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Stop, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("BERHENTI (STOP)", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Real-Time Live AI Thought Card
-                AnimatedVisibility(visible = isThinking && !liveThought.isNullOrBlank()) {
-                    var isExpanded by remember { mutableStateOf(true) }
-                    Surface(
-                        color = JarvisCyan.copy(alpha = 0.12f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, JarvisCyan.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { isExpanded = !isExpanded },
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Psychology, contentDescription = null, tint = JarvisCyan, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Proses Berpikir Realtime",
-                                        color = JarvisCyan,
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Icon(
-                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                    contentDescription = null,
-                                    tint = JarvisCyan,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            if (isExpanded) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                androidx.compose.foundation.text.selection.SelectionContainer {
-                                    Text(
-                                        text = liveThought ?: "",
-                                        color = JarvisTextPrimary.copy(alpha = 0.95f),
-                                        fontSize = 10.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        maxLines = 5,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Attach File / Photo Button
-                    IconButton(
-                        onClick = { filePickerLauncher.launch("*/*") },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .testTag("chat_attach_file_button")
-                    ) {
-                        Icon(
-                            Icons.Default.AttachFile,
-                            contentDescription = "Lampirkan file atau foto",
-                            tint = JarvisTextSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    OutlinedTextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = {
+                            Icon(
+                                imageVector = if (selectedAttachmentMimeType?.startsWith("image/") == true) Icons.Default.Image else Icons.Default.InsertDriveFile,
+                                contentDescription = "Lampiran",
+                                tint = JarvisCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                if (isThinking) "Sedang memproses — ketuk hentikan untuk batal" else "Tulis pesan atau instruksi...",
-                                color = JarvisTextTertiary,
-                                fontSize = 13.sp,
+                                text = selectedAttachmentName ?: "Lampiran dipilih",
+                                color = JarvisTextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("chat_input_textfield"),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = JarvisBorderStrong,
-                            unfocusedBorderColor = JarvisBorder,
-                            focusedTextColor = JarvisTextPrimary,
-                            unfocusedTextColor = JarvisTextPrimary,
-                            cursorColor = JarvisCyan,
-                            focusedContainerColor = JarvisSurfaceVariant,
-                            unfocusedContainerColor = JarvisSurfaceVariant
-                        ),
-                        maxLines = 4,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            if ((inputText.isNotBlank() || selectedAttachmentUri != null) && !isThinking) {
-                                viewModel.sendChatMessage(
-                                    userText = inputText,
-                                    attachmentUri = selectedAttachmentUri,
-                                    attachmentName = selectedAttachmentName,
-                                    attachmentMimeType = selectedAttachmentMimeType
-                                )
-                                inputText = ""
+                        }
+                        IconButton(
+                            onClick = {
                                 selectedAttachmentUri = null
                                 selectedAttachmentName = null
                                 selectedAttachmentMimeType = null
-                            }
-                        })
-                    )
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    // Voice Input (STT) Button
-                    val micButtonColor by animateColorAsState(
-                        targetValue = if (isVoiceListening) JarvisRed else JarvisSurfaceVariant,
-                        label = "mic_color"
-                    )
-                    IconButton(
-                        onClick = {
-                            if (isVoiceListening) {
-                                JarvisVoiceManager.stopListening()
-                            } else {
-                                checkAndRunAudioAction {
-                                    JarvisVoiceManager.startListening(
-                                        context = context,
-                                        onResult = { spoken ->
-                                            inputText = if (inputText.isBlank()) spoken else "$inputText $spoken"
-                                        },
-                                        onError = { err ->
-                                            Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
-                                        }
-                                    )
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(micButtonColor)
-                            .border(1.dp, if (isVoiceListening) JarvisRed else JarvisBorder, RoundedCornerShape(12.dp))
-                            .testTag("chat_mic_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isVoiceListening) Icons.Default.MicOff else Icons.Default.Mic,
-                            contentDescription = "Input suara",
-                            tint = if (isVoiceListening) Color.White else JarvisTextSecondary,
-                            modifier = Modifier.size(19.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    // Send or Stop Button
-                    val canSend = inputText.isNotBlank() || selectedAttachmentUri != null
-                    if (isThinking) {
-                        FloatingActionButton(
-                            onClick = { viewModel.stopAiExecution() },
-                            modifier = Modifier
-                                .size(42.dp)
-                                .testTag("chat_stop_ai_button"),
-                            containerColor = JarvisRed,
-                            contentColor = Color.White,
-                            elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Stop,
-                                contentDescription = "Hentikan eksekusi AI",
-                                modifier = Modifier.size(19.dp)
-                            )
-                        }
-                    } else {
-                        FloatingActionButton(
-                            onClick = {
-                                if (canSend) {
-                                    viewModel.sendChatMessage(
-                                        userText = inputText,
-                                        attachmentUri = selectedAttachmentUri,
-                                        attachmentName = selectedAttachmentName,
-                                        attachmentMimeType = selectedAttachmentMimeType
-                                    )
-                                    inputText = ""
-                                    selectedAttachmentUri = null
-                                    selectedAttachmentName = null
-                                    selectedAttachmentMimeType = null
-                                }
                             },
-                            modifier = Modifier
-                                .size(42.dp)
-                                .testTag("chat_send_button"),
-                            containerColor = if (canSend) JarvisCyan else JarvisSurfaceVariant,
-                            contentColor = if (canSend) JarvisOnPrimary else JarvisTextTertiary,
-                            elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp),
-                            shape = RoundedCornerShape(12.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
-                                Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Kirim pesan",
-                                modifier = Modifier.size(18.dp)
+                                Icons.Default.Close,
+                                contentDescription = "Hapus lampiran",
+                                tint = JarvisTextSecondary,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
                 }
             }
+
+            HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { filePickerLauncher.launch("*/*") },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("chat_attach_file_button")
+                ) {
+                    Icon(
+                        Icons.Default.AttachFile,
+                        contentDescription = "Lampirkan file atau foto",
+                        tint = JarvisTextSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(4.dp))
+
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    placeholder = {
+                        Text(
+                            if (isThinking) "Sedang memproses — ketuk hentikan untuk batal" else "Tulis pesan atau instruksi...",
+                            color = JarvisTextTertiary,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("chat_input_textfield"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = JarvisBorderStrong,
+                        unfocusedBorderColor = JarvisBorder,
+                        focusedTextColor = JarvisTextPrimary,
+                        unfocusedTextColor = JarvisTextPrimary,
+                        cursorColor = JarvisCyan,
+                        focusedContainerColor = JarvisSurfaceVariant,
+                        unfocusedContainerColor = JarvisSurfaceVariant
+                    ),
+                    maxLines = 4,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { dispatchCurrentMessage() })
+                )
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                val micButtonColor by animateColorAsState(
+                    targetValue = if (isVoiceListening) JarvisRed else JarvisSurfaceVariant,
+                    label = "mic_color"
+                )
+                IconButton(
+                    onClick = {
+                        if (isVoiceListening) {
+                            JarvisVoiceManager.stopListening()
+                        } else {
+                            checkAndRunAudioAction {
+                                JarvisVoiceManager.startListening(
+                                    context = context,
+                                    onResult = { spoken ->
+                                        inputText = if (inputText.isBlank()) spoken else "$inputText $spoken"
+                                    },
+                                    onError = { err ->
+                                        Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                                    }
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(micButtonColor)
+                        .border(1.dp, if (isVoiceListening) JarvisRed else JarvisBorder, RoundedCornerShape(12.dp))
+                        .testTag("chat_mic_button")
+                ) {
+                    Icon(
+                        imageVector = if (isVoiceListening) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = "Input suara",
+                        tint = if (isVoiceListening) Color.White else JarvisTextSecondary,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                val canSend = inputText.isNotBlank() || selectedAttachmentUri != null
+                if (isThinking) {
+                    FloatingActionButton(
+                        onClick = { viewModel.stopAiExecution() },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .testTag("chat_stop_ai_button"),
+                        containerColor = JarvisRed,
+                        contentColor = Color.White,
+                        elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Stop,
+                            contentDescription = "Hentikan eksekusi AI",
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                } else {
+                    FloatingActionButton(
+                        onClick = { dispatchCurrentMessage() },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .testTag("chat_send_button"),
+                        containerColor = if (canSend) JarvisCyan else JarvisSurfaceVariant,
+                        contentColor = if (canSend) JarvisOnPrimary else JarvisTextTertiary,
+                        elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Kirim pesan",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
         }
     }
+}
 
-    // Hands-free Voice Call Dialog (Live Voice Mode)
+@Composable
+private fun ChatDialogsHost(
+    viewModel: JarvisViewModel,
+    showVoiceCallDialog: Boolean,
+    onDismissVoiceCall: () -> Unit,
+    showConfigDialog: Boolean,
+    openConfigFreeTab: Boolean,
+    onDismissConfig: () -> Unit,
+    codeToPreview: CodePreviewPayload?,
+    onDismissCodePreview: () -> Unit,
+    showVmViewerDialog: Boolean,
+    onDismissVmViewer: () -> Unit,
+    showPermsDialog: Boolean,
+    onDismissPerms: () -> Unit,
+    onOpenCustomPerms: () -> Unit,
+    showCustomPermsDialog: Boolean,
+    onDismissCustomPerms: () -> Unit,
+    showSessionDialog: Boolean,
+    onDismissSession: () -> Unit,
+    showThinkingHistoryDialog: Boolean,
+    onDismissThinkingHistory: () -> Unit,
+    showTerminalDialog: Boolean,
+    onDismissTerminal: () -> Unit
+) {
+    val isVoiceCallActive by JarvisVoiceManager.isVoiceCallActive.collectAsStateWithLifecycle()
+    val pendingDeletionReq by ToolManager.pendingDeletionRequest.collectAsStateWithLifecycle()
+
     if (showVoiceCallDialog || isVoiceCallActive) {
         JarvisVoiceCallDialog(
-            onDismiss = {
-                showVoiceCallDialog = false
-                viewModel.endVoiceCall()
-            },
-            onSendMessage = { spokenInput ->
-                viewModel.sendChatMessage(spokenInput)
-            }
+            onDismiss = onDismissVoiceCall,
+            onSendMessage = { spokenInput -> viewModel.sendChatMessage(spokenInput) }
         )
     }
 
-    // Sensitive Action / Deletion Approval Dialog
-    val pendingDeletionReq by ToolManager.pendingDeletionRequest.collectAsState()
     pendingDeletionReq?.let { req ->
         AlertDialog(
             onDismissRequest = { ToolManager.denyPendingDeletion() },
@@ -1046,7 +1102,7 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
                         text = req.title,
                         color = JarvisTextPrimary,
                         fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             },
@@ -1066,16 +1122,16 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Izinkan Hapus", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Izinkan Hapus", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 OutlinedButton(
                     onClick = { ToolManager.denyPendingDeletion() },
                     shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
+                    border = ChatBorder
                 ) {
-                    Text("Tolak (Batalkan)", color = JarvisTextPrimary, fontSize = 12.sp)
+                    Text("Tolak", color = JarvisTextPrimary, fontSize = 12.sp)
                 }
             },
             containerColor = JarvisSurface,
@@ -1083,72 +1139,67 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
         )
     }
 
-    // Config Dialog for API Key, Base URL & Model (Custom Endpoint & Presets)
     if (showConfigDialog) {
-        val currentAiConfig by viewModel.aiConfig.collectAsState()
+        val currentAiConfig by viewModel.aiConfig.collectAsStateWithLifecycle()
         AiConfigDialog(
             currentConfig = currentAiConfig,
             onSave = { key, url, model, provider ->
                 viewModel.updateAiConfig(key, url, model, provider)
-                showConfigDialog = false
+                onDismissConfig()
             },
-            onDismiss = { showConfigDialog = false },
+            onDismiss = onDismissConfig,
             initialFilterFree = openConfigFreeTab
         )
     }
 
-    // HTML Live Preview Dialog
-    htmlToPreview?.let { htmlCode ->
+    codeToPreview?.let { payload ->
         HtmlPreviewDialog(
-            htmlCode = htmlCode,
-            onDismiss = { htmlToPreview = null }
+            htmlCode = payload.code,
+            fileName = payload.fileName,
+            language = payload.language,
+            onFileNameChange = payload.onFileNameChange,
+            onDismiss = onDismissCodePreview
         )
     }
 
-    // Virtual Computer Live Viewer & Terminal Dialog
     if (showVmViewerDialog) {
-        VirtualComputerViewerDialog(
-            onDismiss = { showVmViewerDialog = false }
-        )
+        VirtualComputerViewerDialog(onDismiss = onDismissVmViewer)
     }
 
-    // Permission Mode Selector Dialog
     if (showPermsDialog) {
+        val permissionMode by ToolManager.permissionMode.collectAsStateWithLifecycle()
         AlertDialog(
-            onDismissRequest = { showPermsDialog = false },
+            onDismissRequest = onDismissPerms,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Security, contentDescription = null, tint = JarvisCyan)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Pilih Mode Izin AI", color = JarvisTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text("Pilih Mode Izin AI", color = JarvisTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 }
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Tentukan batasan akses otonom AI terhadap smartphone:",
+                        "Tentukan batasan akses otonom AI terhadap perangkat:",
                         color = JarvisTextSecondary,
                         fontSize = 12.sp
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
                     PermissionModeCard(
                         currentMode = permissionMode,
                         onModeSelected = { mode ->
                             ToolManager.setPermissionMode(mode)
                             if (mode == AiPermissionMode.CUSTOM) {
-                                showCustomPermsDialog = true
+                                onOpenCustomPerms()
+                            } else {
+                                onDismissPerms()
                             }
-                            showPermsDialog = false
                         },
-                        onOpenCustomSettings = {
-                            showPermsDialog = false
-                            showCustomPermsDialog = true
-                        }
+                        onOpenCustomSettings = onOpenCustomPerms
                     )
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showPermsDialog = false }) {
+                TextButton(onClick = onDismissPerms) {
                     Text("Tutup", color = JarvisCyan)
                 }
             },
@@ -1156,20 +1207,21 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
         )
     }
 
-    // Custom Permissions Dialog
     if (showCustomPermsDialog) {
+        val customPerms by ToolManager.customPermissions.collectAsStateWithLifecycle()
         CustomPermissionsDialog(
             settings = customPerms,
-            onDismiss = { showCustomPermsDialog = false },
+            onDismiss = onDismissCustomPerms,
             onSave = { updated ->
                 ToolManager.updateCustomPermissions(updated)
-                showCustomPermsDialog = false
+                onDismissCustomPerms()
             }
         )
     }
 
-    // Chat Sessions Manager Dialog
     if (showSessionDialog) {
+        val sessions by viewModel.chatSessions.collectAsStateWithLifecycle()
+        val currentSession by viewModel.currentSession.collectAsStateWithLifecycle()
         JarvisSessionManagerDialog(
             sessions = sessions,
             currentSessionId = currentSession?.id ?: "",
@@ -1178,38 +1230,43 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
             onDeleteSession = { id -> viewModel.deleteSession(id) },
             onRenameSession = { id, newTitle -> viewModel.renameSession(id, newTitle) },
             onClearCurrentSession = { viewModel.clearChat() },
-            onDismiss = { showSessionDialog = false }
+            onDismiss = onDismissSession
         )
     }
 
-    // AI Thinking History Dialog
     if (showThinkingHistoryDialog) {
+        val messages by viewModel.chatMessages.collectAsStateWithLifecycle()
         JarvisThinkingHistoryDialog(
             messages = messages,
-            onDismiss = { showThinkingHistoryDialog = false }
+            onDismiss = onDismissThinkingHistory
         )
     }
 
-    // Live AI Agent Terminal Modal Dialog
     if (showTerminalDialog) {
-        AgentTerminalModalDialog(
-            onDismiss = { showTerminalDialog = false }
-        )
+        AgentTerminalModalDialog(onDismiss = onDismissTerminal)
     }
 }
 
 @Composable
 fun ChatBubble(
     message: ChatMessage,
-    onPreviewHtml: (String) -> Unit = {}
+    onPreviewCode: (CodePreviewPayload) -> Unit = {}
 ) {
     val context = LocalContext.current
     val isUser = message.sender == ChatSender.USER
     val isSystem = message.sender == ChatSender.SYSTEM
 
-    val timeFormatter = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val timeStr = remember(message.timestamp) { timeFormatter.format(Date(message.timestamp)) }
-    val detectedHtml = remember(message.text) { HtmlCodeExtractor.extractHtml(message.text) }
+    val timeStr = remember(message.timestamp) {
+        ChatTimeFormatter.get()?.format(Date(message.timestamp)).orEmpty()
+    }
+    val segments = remember(message.text) { ChatMessageParser.parse(message.text) }
+    val hasCodeBlocks = remember(segments) {
+        segments.any { it is ChatContentSegment.CodeBlockSegment }
+    }
+    val detectedFallbackHtml = remember(message.text, hasCodeBlocks) {
+        if (hasCodeBlocks) null else HtmlCodeExtractor.extractHtml(message.text)
+    }
+    val customCodeFileNames = remember(message.id) { mutableStateMapOf<Int, String>() }
 
     if (isSystem) {
         Box(
@@ -1219,8 +1276,9 @@ fun ChatBubble(
             contentAlignment = Alignment.Center
         ) {
             Surface(
-                color = JarvisSurfaceVariant.copy(alpha = 0.8f),
-                shape = RoundedCornerShape(12.dp)
+                color = JarvisSurfaceVariant,
+                shape = RoundedCornerShape(10.dp),
+                border = ChatBorder
             ) {
                 Text(
                     text = message.text,
@@ -1242,14 +1300,14 @@ fun ChatBubble(
                 modifier = Modifier.size(26.dp),
                 shape = RoundedCornerShape(8.dp),
                 color = JarvisSurfaceVariant,
-                border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
+                border = ChatBorder
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = "A",
                         color = JarvisTextSecondary,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -1257,10 +1315,15 @@ fun ChatBubble(
         }
 
         Column(
-            modifier = Modifier.widthIn(max = 316.dp),
+            modifier = if (!isUser && hasCodeBlocks) {
+                Modifier.weight(1f)
+            } else {
+                Modifier.widthIn(max = 316.dp)
+            },
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
             Surface(
+                modifier = if (!isUser && hasCodeBlocks) Modifier.fillMaxWidth() else Modifier,
                 shape = RoundedCornerShape(
                     topStart = 14.dp,
                     topEnd = 14.dp,
@@ -1268,13 +1331,9 @@ fun ChatBubble(
                     bottomEnd = if (isUser) 4.dp else 14.dp
                 ),
                 color = if (isUser) JarvisSurfaceElevated else JarvisSurface,
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp,
-                    if (isUser) JarvisBorderStrong else JarvisBorder
-                )
+                border = if (isUser) ChatBorderStrong else ChatBorder
             ) {
                 Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)) {
-                    // AI Thinking Trace Banner (Expandable/Collapsible)
                     if (!isUser && !message.thinkingProcess.isNullOrBlank()) {
                         ThinkingTraceCard(
                             thinking = message.thinkingProcess,
@@ -1282,7 +1341,6 @@ fun ChatBubble(
                         )
                     }
 
-                    // Inline Thumbnail Preview for local AI-captured screenshots
                     val isLocalImageFile = message.attachmentMimeType?.startsWith("image/") == true &&
                         !message.attachmentUri.isNullOrBlank() &&
                         !message.attachmentUri.startsWith("content://")
@@ -1296,7 +1354,7 @@ fun ChatBubble(
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = JarvisSurfaceVariant,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder),
+                            border = ChatBorder,
                             modifier = Modifier.padding(bottom = 6.dp)
                         ) {
                             Row(
@@ -1320,28 +1378,66 @@ fun ChatBubble(
                         }
                     }
 
-                    Text(
-                        text = message.text,
-                        color = JarvisTextPrimary,
-                        fontSize = 13.5.sp,
-                        lineHeight = 19.sp
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        segments.forEach { segment ->
+                            when (segment) {
+                                is ChatContentSegment.TextSegment -> {
+                                    if (segment.text.isNotBlank()) {
+                                        Text(
+                                            text = segment.text,
+                                            color = JarvisTextPrimary,
+                                            fontSize = 13.5.sp,
+                                            lineHeight = 19.sp
+                                        )
+                                    }
+                                }
+                                is ChatContentSegment.CodeBlockSegment -> {
+                                    val resolvedName = customCodeFileNames[segment.index] ?: segment.suggestedFileName
+                                    CodeBlockCard(
+                                        segment = segment,
+                                        fileName = resolvedName,
+                                        onRename = { newName ->
+                                            customCodeFileNames[segment.index] = newName
+                                        },
+                                        onPreview = { currentName ->
+                                            onPreviewCode(
+                                                CodePreviewPayload(
+                                                    code = segment.code,
+                                                    fileName = currentName,
+                                                    language = segment.language,
+                                                    onFileNameChange = { renamed ->
+                                                        customCodeFileNames[segment.index] = renamed
+                                                    }
+                                                )
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
 
-                    // HTML Live Preview Button if code detected
-                    if (detectedHtml != null) {
+                    if (detectedFallbackHtml != null) {
                         HtmlPreviewBanner(
-                            htmlCode = detectedHtml,
-                            onOpenPreview = { onPreviewHtml(detectedHtml) }
+                            htmlCode = detectedFallbackHtml,
+                            onOpenPreview = {
+                                onPreviewCode(
+                                    CodePreviewPayload(
+                                        code = detectedFallbackHtml,
+                                        fileName = "index.html",
+                                        language = "html"
+                                    )
+                                )
+                            }
                         )
                     }
 
-                    // If action was executed
                     if (message.actionResult != null) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
                             color = JarvisSurfaceVariant,
                             shape = RoundedCornerShape(6.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, JarvisEmerald.copy(alpha = 0.5f))
+                            border = BorderStroke(1.dp, JarvisEmerald.copy(alpha = 0.4f))
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1351,14 +1447,14 @@ fun ChatBubble(
                                     Icons.Default.CheckCircle,
                                     contentDescription = null,
                                     tint = JarvisEmerald,
-                                    modifier = Modifier.size(14.dp)
+                                    modifier = Modifier.size(13.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = message.actionResult,
                                     color = JarvisEmerald,
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
                         }
@@ -1373,35 +1469,42 @@ fun ChatBubble(
             ) {
                 Text(
                     text = timeStr,
-                    color = JarvisTextSecondary,
-                    fontSize = 9.sp
+                    color = JarvisTextTertiary,
+                    fontSize = 9.5.sp,
+                    fontFamily = FontFamily.Monospace
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Icon(
-                    imageVector = Icons.Default.ContentCopy,
-                    contentDescription = "Salin Pesan",
-                    tint = JarvisCyan.copy(alpha = 0.8f),
+                Spacer(modifier = Modifier.width(4.dp))
+                Box(
                     modifier = Modifier
-                        .size(13.dp)
+                        .clip(RoundedCornerShape(4.dp))
                         .clickable {
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            val clip = android.content.ClipData.newPlainText("Pesan Asisten", message.text)
-                            clipboard.setPrimaryClip(clip)
-                            Toast.makeText(context, "Pesan disalin ke clipboard 📋", Toast.LENGTH_SHORT).show()
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Pesan Asisten", message.text))
+                            Toast.makeText(context, "Pesan disalin", Toast.LENGTH_SHORT).show()
                         }
-                )
-                if (!isUser) {
-                    Spacer(modifier = Modifier.width(6.dp))
+                        .padding(4.dp)
+                ) {
                     Icon(
-                        imageVector = Icons.Default.VolumeUp,
-                        contentDescription = "Dengarkan Jawaban Suara",
-                        tint = JarvisCyan.copy(alpha = 0.8f),
-                        modifier = Modifier
-                            .size(13.dp)
-                            .clickable {
-                                JarvisVoiceManager.speak(message.text)
-                            }
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "Salin pesan",
+                        tint = JarvisTextSecondary,
+                        modifier = Modifier.size(13.dp)
                     )
+                }
+                if (!isUser) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { JarvisVoiceManager.speak(message.text) }
+                            .padding(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = "Dengarkan jawaban",
+                            tint = JarvisTextSecondary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1409,17 +1512,17 @@ fun ChatBubble(
         if (isUser) {
             Spacer(modifier = Modifier.width(6.dp))
             Surface(
-                modifier = Modifier.size(28.dp),
+                modifier = Modifier.size(26.dp),
                 shape = CircleShape,
                 color = JarvisSurfaceVariant,
-                border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
+                border = ChatBorder
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         Icons.Default.Person,
-                        contentDescription = "User",
+                        contentDescription = "Pengguna",
                         tint = JarvisTextPrimary,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
@@ -1428,7 +1531,7 @@ fun ChatBubble(
 }
 
 /**
- * Futuristic Collapsible Thinking Card displayed directly inside the AI response bubble
+ * Kartu penalaran ringkas & dapat dilipat di dalam gelembung AI (tanpa pendaran neon).
  */
 @Composable
 fun ThinkingTraceCard(
@@ -1440,8 +1543,8 @@ fun ThinkingTraceCard(
 
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = JarvisSurfaceVariant.copy(alpha = 0.8f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, JarvisAmber.copy(alpha = 0.5f)),
+        color = JarvisSurfaceVariant,
+        border = ChatBorder,
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 8.dp)
@@ -1463,60 +1566,38 @@ fun ThinkingTraceCard(
                         imageVector = Icons.Default.Psychology,
                         contentDescription = null,
                         tint = JarvisAmber,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Proses Berpikir",
-                        color = JarvisAmber,
+                        text = if (!actionToolName.isNullOrBlank()) "Penalaran · $actionToolName" else "Proses Berpikir",
+                        color = JarvisTextPrimary,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    if (!actionToolName.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = JarvisCyan.copy(alpha = 0.15f),
-                            border = androidx.compose.foundation.BorderStroke(0.5.dp, JarvisCyan.copy(alpha = 0.6f))
-                        ) {
-                            Text(
-                                text = "Tool: $actionToolName",
-                                color = JarvisCyan,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
-                        }
-                    }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = if (isExpanded) "Tutup" else "Lihat Detail",
-                        color = JarvisCyan,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = null,
-                        tint = JarvisCyan,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (isExpanded) "Tutup" else "Lihat detail",
+                    tint = JarvisTextSecondary,
+                    modifier = Modifier.size(16.dp)
+                )
             }
 
-            AnimatedVisibility(visible = isExpanded) {
+            if (isExpanded) {
                 Column(modifier = Modifier.padding(top = 6.dp)) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = JarvisBackground,
-                        border = androidx.compose.foundation.BorderStroke(0.5.dp, JarvisBorder),
+                        border = ChatBorder,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
                             text = thinking,
-                            color = JarvisTextPrimary.copy(alpha = 0.9f),
+                            color = JarvisTextSecondary,
                             fontSize = 10.5.sp,
                             fontFamily = FontFamily.Monospace,
                             lineHeight = 15.sp,
@@ -1530,17 +1611,18 @@ fun ThinkingTraceCard(
                         horizontalArrangement = Arrangement.End
                     ) {
                         Text(
-                            text = "Salin Pemikiran",
+                            text = "Salin penalaran",
                             color = JarvisCyan,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium,
                             modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
                                 .clickable {
-                                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Proses Berpikir", thinking))
-                                    android.widget.Toast.makeText(context, "Proses berpikir disalin", android.widget.Toast.LENGTH_SHORT).show()
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Proses Berpikir", thinking))
+                                    Toast.makeText(context, "Proses berpikir disalin", Toast.LENGTH_SHORT).show()
                                 }
-                                .padding(4.dp)
+                                .padding(horizontal = 6.dp, vertical = 3.dp)
                         )
                     }
                 }
