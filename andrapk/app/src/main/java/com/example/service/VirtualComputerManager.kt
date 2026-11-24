@@ -203,6 +203,58 @@ object VirtualComputerManager {
         _logs.value = emptyList()
     }
 
+    /**
+     * Membuat streamer log live untuk output proses panjang (setup/install).
+     * - Buffer per-baris: hanya baris LENGKAP yang ditampilkan (potongan chunk disimpan dulu).
+     * - Progress-bar berbasis carriage return (curl/apt) dinormalisasi: hanya frame terakhir
+     *   per batch yang tampil, bukan ratusan pembaruan persen.
+     * - Spam frame progres beruntun ("Reading database ... 45%" dst) dirapatkan.
+     * - Baris terakhir selalu mengalir ke statusDetail (header panel VM).
+     */
+    private fun makeLiveLogStreamer(): (String) -> Unit {
+        val pending = StringBuilder()
+        var lastShownLine = ""
+        return { chunk ->
+            pending.append(chunk.replace('\r', '\n'))
+            val text = pending.toString()
+            val lastNl = text.lastIndexOf('\n')
+            if (lastNl >= 0) {
+                val complete = text.substring(0, lastNl)
+                val remainder = text.substring(lastNl + 1)
+                pending.setLength(0)
+                pending.append(remainder)
+
+                val lines = complete.split('\n')
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                // Rapatkan frame progres identik-awalan yang beruntun (ambil frame terakhir).
+                val squashed = ArrayList<String>(lines.size)
+                for (line in lines) {
+                    val prev = squashed.lastOrNull()
+                    if (prev != null && isProgressFramePair(prev, line)) {
+                        squashed[squashed.size - 1] = line
+                    } else {
+                        squashed.add(line)
+                    }
+                }
+                val display = squashed.filter { it != lastShownLine }.takeLast(10)
+                if (display.isNotEmpty()) {
+                    lastShownLine = display.last()
+                    _status.value = _status.value.copy(statusDetail = lastShownLine.take(110))
+                    appendLog("VM", display.joinToString("\n"))
+                }
+            }
+        }
+    }
+
+    /** Dua baris dianggap frame progres yang sama bila awalannya identik sebelum angka persen/byte. */
+    private fun isProgressFramePair(a: String, b: String): Boolean {
+        fun stem(s: String): String = s.takeWhile { !it.isDigit() }.trim()
+        val sa = stem(a)
+        val sb = stem(b)
+        return sa.isNotEmpty() && sa == sb && (a.contains('%') || b.contains('%'))
+    }
+
     fun updatePreferredConfig(
         distro: VmDistro = _status.value.distro,
         mode: VmMode = _status.value.mode,
@@ -582,7 +634,7 @@ esac
 
         val deadline = System.currentTimeMillis() + timeoutMs
         var lastProgressCheck = 0L
-        var lastReportedLine = ""
+        var readOffset = 0L
         while (System.currentTimeMillis() < deadline) {
             if (doneFile.exists()) {
                 delay(120)
@@ -591,19 +643,28 @@ esac
                 runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
                 return@withContext Pair(rc, out)
             }
-            // Laporkan progres live (baris terakhir output) tiap ~2.5 detik agar
-            // pengguna melihat unduhan/instalasi berjalan — bukan tampak menggantung.
+            // Tail inkremental: baca HANYA byte baru sejak pembacaan terakhir lalu
+            // teruskan apa adanya ke callback — seluruh output (Get:, Unpacking,
+            // Setting up, progres curl, dst) mengalir live seperti terminal asli.
             val now = System.currentTimeMillis()
-            if (onPartialOutput != null && now - lastProgressCheck >= 2_500L) {
+            if (onPartialOutput != null && now - lastProgressCheck >= 1_500L) {
                 lastProgressCheck = now
-                val lastLine = runCatching {
+                runCatching {
                     if (outFile.exists()) {
-                        outFile.readText().trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
-                    } else ""
-                }.getOrDefault("")
-                if (lastLine.isNotBlank() && lastLine != lastReportedLine) {
-                    lastReportedLine = lastLine
-                    onPartialOutput(lastLine.take(160))
+                        val len = outFile.length()
+                        if (len > readOffset) {
+                            java.io.RandomAccessFile(outFile, "r").use { raf ->
+                                raf.seek(readOffset)
+                                val toRead = (len - readOffset).coerceAtMost(64_000L).toInt()
+                                val bytes = ByteArray(toRead)
+                                val n = raf.read(bytes)
+                                if (n > 0) {
+                                    readOffset += n
+                                    onPartialOutput(String(bytes, 0, n, Charsets.UTF_8))
+                                }
+                            }
+                        }
+                    }
                 }
             }
             delay(250)
@@ -816,23 +877,15 @@ esac
         if (!alreadyInstalled) {
             _status.value = _status.value.copy(statusDetail = "Mengunduh & memasang ${distro.displayName} (3–15 menit tergantung koneksi)...")
             appendLog("SYSTEM", "Mengunduh rootfs ${distro.displayName} dan paket desktop/CLI...")
-            var lastLoggedProgress = 0L
+            appendLog("VM", "$ andra_vm.sh setup ${distro.id} ${mode.id} browser=${if (includeBrowser) "1" else "0"}")
             val (setupRc, setupOut) = invokeTermuxVmScript(
                 action = "setup",
                 distro = distro,
                 args = listOf(mode.id, if (includeBrowser) "1" else "0", extraPackages.joinToString(" ")),
                 timeoutMs = 1_200_000L,
-                onPartialOutput = { line ->
-                    // Progres live: statusDetail selalu diperbarui; log VM maksimal tiap 10 detik.
-                    _status.value = _status.value.copy(statusDetail = line.take(96))
-                    val now = System.currentTimeMillis()
-                    if (now - lastLoggedProgress >= 10_000L) {
-                        lastLoggedProgress = now
-                        appendLog("VM", line)
-                    }
-                }
+                onPartialOutput = makeLiveLogStreamer()
             )
-            if (setupOut.isNotBlank()) appendLog("VM", setupOut.takeLast(1500), isError = setupRc != 0)
+            if (setupRc != 0 && setupOut.isNotBlank()) appendLog("VM", setupOut.takeLast(1200), isError = true)
             if (setupRc != 0) {
                 val err = "Gagal menyiapkan ${distro.displayName}: ${setupOut.takeLast(400)}"
                 _status.value = _status.value.copy(state = VmState.ERROR, statusDetail = "Setup gagal", lastError = err)
@@ -844,11 +897,13 @@ esac
 
         // 2. Start VM (Xvnc + Openbox + noVNC jika mode GUI)
         _status.value = _status.value.copy(statusDetail = "Menjalankan layanan Komputer Virtual...")
+        appendLog("VM", "$ andra_vm.sh start ${distro.id} ${mode.id}")
         val (startRc, startOut) = invokeTermuxVmScript(
             action = "start",
             distro = distro,
             args = listOf(mode.id),
-            timeoutMs = 45_000L
+            timeoutMs = 45_000L,
+            onPartialOutput = makeLiveLogStreamer()
         )
         if (startOut.isNotBlank()) appendLog("VM", startOut, isError = startRc != 0)
         if (startRc != 0) {
@@ -928,8 +983,14 @@ esac
         val guard = requireRunningVm()
         if (guard != null) return@withContext guard
         appendLog("SYSTEM", "Memasang Chromium di dalam ${_status.value.distro.displayName}...")
-        val (rc, out) = invokeTermuxVmScript("install_browser", _status.value.distro, timeoutMs = 240_000L)
-        appendLog("VM", out.takeLast(1200), isError = rc != 0)
+        appendLog("VM", "$ andra_vm.sh install_browser ${_status.value.distro.id}")
+        val (rc, out) = invokeTermuxVmScript(
+            "install_browser",
+            _status.value.distro,
+            timeoutMs = 600_000L,
+            onPartialOutput = makeLiveLogStreamer()
+        )
+        if (rc != 0) appendLog("VM", out.takeLast(1200), isError = true)
         if (rc == 0) {
             _status.value = _status.value.copy(includeBrowser = true)
             persistConfig(includeBrowser = true)
