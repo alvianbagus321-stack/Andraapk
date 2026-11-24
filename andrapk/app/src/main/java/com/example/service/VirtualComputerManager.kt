@@ -607,6 +607,18 @@ esac
             )
         }
 
+        // KRITIS: tanpa izin "Akses semua file", folder IPC jatuh ke /data/data milik
+        // aplikasi yang MUSTAHIL ditulis Termux — semua perintah pasti timeout.
+        // Tolak dini dengan pesan yang jelas alih-alih menunggu timeout menyesatkan.
+        if (!AdbShizukuManager.isManageStorageGranted()) {
+            return@withContext Pair(
+                -1,
+                "Izin \"Akses semua file\" (All files access) belum diberikan ke aplikasi ini. " +
+                    "Tanpa izin itu Termux tidak bisa bertukar file dengan aplikasi, sehingga semua perintah VM gagal. " +
+                    "Tekan tombol \"Beri Izin Akses File\" di panel Komputer Virtual, lalu aktifkan untuk Andra Control."
+            )
+        }
+
         val scriptFile = writeControlScript()
         val ipcDir = getIpcDir()
         val jobId = UUID.randomUUID().toString().take(8)
@@ -627,14 +639,17 @@ esac
             append("touch '").append(doneFile.absolutePath).append("'")
         }
 
-        try {
-            AdbShizukuManager.sendTermuxRunCommandIntent(
-                context = ctx,
-                executablePath = "/data/data/com.termux/files/usr/bin/bash",
-                arguments = arrayOf("-c", bashCmd)
+        val sent = AdbShizukuManager.sendTermuxRunCommandIntent(
+            context = ctx,
+            executablePath = "/data/data/com.termux/files/usr/bin/bash",
+            arguments = arrayOf("-c", bashCmd)
+        )
+        if (!sent) {
+            return@withContext Pair(
+                -1,
+                "Gagal mengirim perintah ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "intent ditolak sistem"}. " +
+                    "Buka aplikasi Termux sekali (biarkan di recent apps), lalu coba lagi."
             )
-        } catch (e: Exception) {
-            return@withContext Pair(-1, "Gagal mengirim perintah ke Termux: ${e.message}")
         }
 
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -688,9 +703,12 @@ esac
         runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
 
         val hint = if (partial.isBlank()) {
-            "Timeout menunggu respons Termux (${timeoutMs / 1000}d). Pastikan:\n" +
-                "1. Di Termux sudah dijalankan: echo 'allow-external-apps=true' >> ~/.termux/termux.properties && termux-reload-settings\n" +
-                "2. Izin 'Display over other apps' / 'Run commands in Termux' untuk aplikasi ini diizinkan, serta Termux sudah pernah dibuka."
+            "Timeout menunggu respons Termux (${timeoutMs / 1000}d) — Termux tidak menulis output apa pun. Penyebab paling umum:\n" +
+                "1. Termux belum punya izin storage. Buka Termux, jalankan: termux-setup-storage lalu IZINKAN akses file. Tanpa ini Termux tidak bisa menulis hasil ke folder bersama.\n" +
+                "2. Di Termux belum dijalankan: echo 'allow-external-apps=true' >> ~/.termux/termux.properties && termux-reload-settings\n" +
+                "3. HP Xiaomi/Redmi: aktifkan 'Mulai otomatis' (Autostart) untuk Termux di Keamanan > Izin, dan matikan pembatasan baterai Termux.\n" +
+                "4. Buka aplikasi Termux sekali dan biarkan tetap di recent apps saat setup berjalan.\n" +
+                "Gunakan tombol \"Diagnosa Termux\" di panel VM untuk pengecekan otomatis."
         } else {
             "Perintah masih berjalan / timeout (${timeoutMs / 1000}d).\nOutput terakhir:\n$partial"
         }
@@ -740,6 +758,93 @@ esac
         _status.value = _status.value.copy(statusDetail = "Membatalkan setup...")
         appendLog("SYSTEM", "Membatalkan setup atas permintaan pengguna...")
         ToolResult("ok", result = "Permintaan pembatalan setup dikirim.")
+    }
+
+    /** Dipakai UI untuk menampilkan tombol perbaikan izin bila belum diberikan. */
+    fun hasAllFilesAccess(): Boolean = AdbShizukuManager.isManageStorageGranted()
+
+    /** Fire-and-forget untuk tombol "Diagnosa Termux" di UI; hasil tampil di log Terminal VM. */
+    fun diagnoseTermuxAsync() {
+        scope.launch { diagnoseTermux() }
+    }
+
+    /**
+     * Pengecekan berlapis koneksi aplikasi ↔ Termux. Menemukan lapisan yang gagal
+     * dan menulis saran perbaikan spesifik ke log Terminal VM.
+     */
+    suspend fun diagnoseTermux(): ToolResult = withContext(Dispatchers.IO) {
+        val ctx = JarvisApp.instance
+        appendLog("SYSTEM", "=== DIAGNOSA KONEKSI TERMUX ===")
+
+        // 1. Termux terpasang?
+        if (!AdbShizukuManager.isTermuxInstalled(ctx)) {
+            appendLog("SYSTEM", "[1] GAGAL: Termux tidak terpasang. Pasang dari F-Droid: https://f-droid.org/packages/com.termux/", isError = true)
+            return@withContext ToolResult("error", message = "Termux tidak terpasang.")
+        }
+        appendLog("SYSTEM", "[1] OK: Termux terpasang.")
+
+        // 2. Izin "Akses semua file" aplikasi ini?
+        if (!AdbShizukuManager.isManageStorageGranted()) {
+            appendLog(
+                "SYSTEM",
+                "[2] GAGAL: Aplikasi belum punya izin \"Akses semua file\". Tanpa ini folder pertukaran jatuh ke area privat yang tidak bisa ditulis Termux. Tekan tombol \"Beri Izin Akses File\" lalu aktifkan untuk Andra Control, kemudian diagnosa ulang.",
+                isError = true
+            )
+            return@withContext ToolResult("error", message = "Izin Akses semua file belum diberikan.")
+        }
+        appendLog("SYSTEM", "[2] OK: Izin \"Akses semua file\" aktif.")
+
+        // 3. Aplikasi bisa menulis folder IPC bersama?
+        val ipcDir = getIpcDir()
+        appendLog("SYSTEM", "[3] Folder pertukaran: ${ipcDir.absolutePath}")
+        val appCanWrite = runCatching {
+            val f = File(ipcDir, "app_probe.tmp")
+            f.writeText("ok")
+            f.delete()
+        }.isSuccess
+        if (!appCanWrite) {
+            appendLog("SYSTEM", "[3] GAGAL: Aplikasi tidak bisa menulis ke folder tersebut. Coba cabut-pasang izin \"Akses semua file\" lalu restart aplikasi.", isError = true)
+            return@withContext ToolResult("error", message = "Folder IPC tidak bisa ditulis aplikasi.")
+        }
+        appendLog("SYSTEM", "[3] OK: Aplikasi bisa menulis folder pertukaran.")
+
+        // 4. Kirim probe: Termux harus menjalankan perintah DAN menulis balik file.
+        val probeFile = File(ipcDir, "probe_${System.currentTimeMillis()}.ok")
+        val probeCmd = "echo ANDRA_PROBE_OK > '${probeFile.absolutePath}' 2>/dev/null || " +
+            "echo ANDRA_PROBE_OK > '${probeFile.absolutePath.replace("/storage/emulated/0", "/sdcard")}' 2>/dev/null"
+        appendLog("SYSTEM", "[4] Mengirim perintah uji ke Termux (tunggu maks 12 detik)...")
+        val sent = AdbShizukuManager.sendTermuxRunCommandIntent(
+            context = ctx,
+            executablePath = "/data/data/com.termux/files/usr/bin/bash",
+            arguments = arrayOf("-c", probeCmd)
+        )
+        if (!sent) {
+            appendLog("SYSTEM", "[4] GAGAL mengirim intent ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "ditolak sistem"}. Buka Termux sekali, biarkan di recent apps, lalu coba lagi.", isError = true)
+            return@withContext ToolResult("error", message = "Intent RUN_COMMAND gagal dikirim.")
+        }
+        val deadline = System.currentTimeMillis() + 12_000L
+        var probeOk = false
+        while (System.currentTimeMillis() < deadline) {
+            if (probeFile.exists()) { probeOk = true; break }
+            delay(400)
+        }
+        runCatching { probeFile.delete() }
+
+        if (probeOk) {
+            appendLog("SYSTEM", "[4] OK: Termux merespons dan bisa menulis file. KONEKSI SEHAT ✓ — silakan mulai setup VM.")
+            return@withContext ToolResult("ok", result = "Koneksi Termux sehat.")
+        }
+
+        appendLog(
+            "SYSTEM",
+            "[4] GAGAL: Termux tidak merespons / tidak bisa menulis balik. Perbaiki berurutan:\n" +
+                "a. Buka Termux, jalankan: termux-setup-storage — lalu IZINKAN akses penyimpanan (ini yang paling sering terlewat).\n" +
+                "b. Pastikan sudah pernah: echo 'allow-external-apps=true' >> ~/.termux/termux.properties && termux-reload-settings\n" +
+                "c. HP Xiaomi/Redmi/POCO: Setelan > Aplikasi > Termux > aktifkan \"Mulai otomatis\" (Autostart) dan set Baterai ke \"Tanpa batasan\".\n" +
+                "d. Biarkan Termux terbuka di recent apps, lalu tekan \"Diagnosa Termux\" lagi.",
+            isError = true
+        )
+        ToolResult("error", message = "Termux tidak merespons probe.")
     }
 
     private fun isNoVncReachable(port: Int = _status.value.novncPort): Boolean {

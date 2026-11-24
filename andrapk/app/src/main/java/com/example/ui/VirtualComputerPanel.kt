@@ -40,6 +40,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.service.AdbShizukuManager
 import com.example.service.VirtualComputerManager
 import com.example.service.VmApprovalRequest
 import com.example.service.VmDistro
@@ -1210,11 +1211,61 @@ fun VirtualComputerControlCard(
                 }
             }
 
-            if (status.isApproved) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+            // Peringatan keras bila izin "Akses semua file" belum aktif — tanpa ini
+            // Termux tidak bisa bertukar file dengan aplikasi dan semua aksi VM timeout.
+            if (!VirtualComputerManager.hasAllFilesAccess()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(JarvisRed.copy(alpha = 0.10f))
+                        .padding(12.dp)
                 ) {
+                    Text(
+                        text = "Izin \"Akses semua file\" belum aktif",
+                        color = JarvisRed,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Tanpa izin ini Termux tidak bisa bertukar file dengan aplikasi — setup VM pasti gagal timeout. Aktifkan dulu, lalu kembali ke sini.",
+                        color = JarvisTextSecondary,
+                        fontSize = 11.5.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { AdbShizukuManager.requestAllFilesAccess(context) },
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = JarvisRed, contentColor = Color.White),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text("Beri Izin Akses File", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = {
+                        VirtualComputerManager.diagnoseTermuxAsync()
+                        onOpenViewer()
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "Diagnosa Termux",
+                        color = JarvisCyan,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                if (status.isApproved) {
                     TextButton(
                         onClick = { showDestroyConfirm = true },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
