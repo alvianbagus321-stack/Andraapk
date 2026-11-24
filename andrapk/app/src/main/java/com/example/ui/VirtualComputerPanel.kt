@@ -39,10 +39,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.service.VirtualComputerManager
 import com.example.service.VmApprovalRequest
 import com.example.service.VmDistro
-import com.example.service.VmLogEntry
 import com.example.service.VmMode
 import com.example.service.VmState
 import com.example.service.VmStatus
@@ -321,8 +321,9 @@ fun VirtualComputerViewerDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val status by VirtualComputerManager.status.collectAsState()
-    val logs by VirtualComputerManager.logs.collectAsState()
+    // Catatan performa: `logs` TIDAK dikoleksi di root dialog — hanya di body tab
+    // yang menampilkannya, agar stream log deras tidak me-recompose header/tab/WebView.
+    val status by VirtualComputerManager.status.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     var activeTab by remember {
@@ -507,7 +508,6 @@ fun VirtualComputerViewerDialog(
                         } else {
                             VmOfflineOrProvisioningBody(
                                 status = status,
-                                logs = logs,
                                 onStart = {
                                     scope.launch(Dispatchers.IO) {
                                         VirtualComputerManager.startOrProvisionVm(context)
@@ -518,7 +518,6 @@ fun VirtualComputerViewerDialog(
                     } else {
                         VmTerminalConsoleBody(
                             status = status,
-                            logs = logs,
                             input = terminalInput,
                             isBusy = isExecBusy,
                             onInputChange = { terminalInput = it },
@@ -644,9 +643,9 @@ private fun VmQuickActionButton(
 @Composable
 private fun VmOfflineOrProvisioningBody(
     status: VmStatus,
-    logs: List<VmLogEntry>,
     onStart: () -> Unit
 ) {
+    val logs by VirtualComputerManager.logs.collectAsStateWithLifecycle()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -751,18 +750,20 @@ private fun VmOfflineOrProvisioningBody(
 @Composable
 private fun VmTerminalConsoleBody(
     status: VmStatus,
-    logs: List<VmLogEntry>,
     input: String,
     isBusy: Boolean,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit
 ) {
+    val logs by VirtualComputerManager.logs.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
     LaunchedEffect(logs.size) {
         if (logs.isNotEmpty()) {
-            listState.animateScrollToItem(logs.lastIndex)
+            // scrollToItem (non-animasi): log VM bisa deras saat provisioning;
+            // scroll animasi beruntun membuat frame drop di perangkat kelas bawah.
+            listState.scrollToItem(logs.lastIndex)
         }
     }
 
@@ -894,7 +895,7 @@ fun VirtualComputerControlCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val status by VirtualComputerManager.status.collectAsState()
+    val status by VirtualComputerManager.status.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var showDestroyConfirm by remember { mutableStateOf(false) }
 

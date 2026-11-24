@@ -18,8 +18,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -36,10 +34,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.GlassBorderBrush
 import com.example.ui.theme.JarvisAmber
-import com.example.ui.theme.JarvisBackground
 import com.example.ui.theme.JarvisBorder
+import com.example.ui.theme.ambientDepth
+import com.example.ui.theme.specularGlass
 import com.example.ui.theme.JarvisBorderStrong
 import com.example.ui.theme.JarvisCyan
 import com.example.ui.theme.JarvisEmerald
@@ -50,11 +48,11 @@ import com.example.ui.theme.JarvisTextPrimary
 import com.example.ui.theme.JarvisTextSecondary
 
 /**
- * Komponen bersama Graphite Precision — tenang, presisi, dan ringan di GPU (60fps).
+ * Komponen bersama Liquid Glass — tenang, presisi, dan ringan di GPU (60fps).
  */
 
 /**
- * Kanvas dasar matte carbon bersih tanpa efek pendaran neon berlebihan.
+ * Kanvas kedalaman ambient statis (obsidian + orb radial redup, digambar sekali).
  */
 @Composable
 fun AuroraBackdrop(
@@ -64,14 +62,15 @@ fun AuroraBackdrop(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(JarvisBackground)
+            .ambientDepth()
     ) {
         content()
     }
 }
 
 /**
- * Kartu permukaan bertingkat dengan garis tepi 1dp netral.
+ * Kartu kaca spekular Tier-2: isian translusen, rim gradien terarah, sheen atas.
+ * Seluruh efek digambar via drawWithCache — nol alokasi per frame.
  */
 @Composable
 fun GlassCard(
@@ -81,15 +80,11 @@ fun GlassCard(
     accentBrush: Brush? = null,
     content: @Composable () -> Unit
 ) {
-    Card(
-        modifier = modifier.border(
-            1.dp,
-            accentBrush ?: GlassBorderBrush,
-            RoundedCornerShape(cornerRadius)
-        ),
-        shape = RoundedCornerShape(cornerRadius),
-        colors = CardDefaults.cardColors(containerColor = containerColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(containerColor)
+            .specularGlass(cornerRadius = cornerRadius, rimBrush = accentBrush)
     ) {
         content()
     }

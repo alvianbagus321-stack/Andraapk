@@ -1,5 +1,7 @@
 package com.example.service
 
+import androidx.compose.runtime.Immutable
+
 import android.os.Build
 import android.os.Environment
 import android.util.Log
@@ -22,6 +24,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Satu entri riwayat eksekusi di terminal internal AI Agent.
  */
+@Immutable
 data class TerminalEntry(
     val id: String = UUID.randomUUID().toString(),
     val sessionId: String,
@@ -37,6 +40,7 @@ data class TerminalEntry(
 /**
  * Ringkasan status proses latar belakang yang berjalan di terminal AI Agent.
  */
+@Immutable
 data class BackgroundJobInfo(
     val jobId: String,
     val name: String,

@@ -32,5 +32,6 @@ val JarvisRed = Color(0xFFE55B64)
 val JarvisTextPrimary = Color(0xFFECEFF4)
 val JarvisTextSecondary = Color(0xFF8B94A3)
 val JarvisTextTertiary = Color(0xFF646E7E)
-val JarvisBorder = Color(0xFF252A33)
-val JarvisBorderStrong = Color(0xFF323946)
+// Hairline kaca translusen (liquid glass): putih 8% / 14% di atas permukaan gelap.
+val JarvisBorder = Color(0x14FFFFFF)
+val JarvisBorderStrong = Color(0x24FFFFFF)

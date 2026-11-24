@@ -1,5 +1,7 @@
 package com.example.service
 
+import androidx.compose.runtime.Immutable
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -64,6 +66,7 @@ enum class VmState {
     ERROR
 }
 
+@Immutable
 data class VmApprovalRequest(
     val id: String = UUID.randomUUID().toString(),
     val distro: VmDistro = VmDistro.DEBIAN,
@@ -74,6 +77,7 @@ data class VmApprovalRequest(
     val requestedAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 data class VmStatus(
     val state: VmState = VmState.STOPPED,
     val distro: VmDistro = VmDistro.DEBIAN,
@@ -92,6 +96,7 @@ data class VmStatus(
         get() = "http://127.0.0.1:$novncPort/vnc.html?autoconnect=1&resize=scale&reconnect=1&reconnect_delay=1500"
 }
 
+@Immutable
 data class VmLogEntry(
     val id: String = UUID.randomUUID().toString(),
     val source: String, // "SYSTEM", "AI", "USER", "VM"
@@ -372,7 +377,13 @@ case "${'$'}ACTION" in
     echo "NOVNC_UP=${'$'}NOVNC_UP"
     echo "CDP_UP=${'$'}CDP_UP"
     if [ "${'$'}INSTALLED" = "yes" ]; then
-      run_in_vm "uname -a; free -m | awk 'NR==2{print \"MEM_MB=\"${'$'}3\"/\"${'$'}2}'; df -h / | awk 'NR==2{print \"DISK=\"${'$'}3\"/\"${'$'}2\" (\"${'$'}5\")\"}'" 2>/dev/null || true
+      VM_INFO_CMD="${'$'}(cat <<'VMINFOEOF'
+uname -a
+free -m | awk 'NR==2{print "MEM_MB=" ${'$'}3 "/" ${'$'}2}'
+df -h / | awk 'NR==2{print "DISK=" ${'$'}3 "/" ${'$'}2 " (" ${'$'}5 ")"}'
+VMINFOEOF
+)"
+      run_in_vm "${'$'}VM_INFO_CMD" 2>/dev/null || true
     fi
     ;;
 
@@ -449,27 +460,34 @@ PYEOF
         run_in_vm "xdotool click --repeat ${'$'}STEPS --delay 50 ${'$'}BTN && echo 'OK scroll ${'$'}P1 x${'$'}STEPS'"
         ;;
       type)
-        TEXT_DEC="${'$'}(printf '%s' "${'$'}P1" | base64 -d 2>/dev/null || true)"
-        run_in_vm "xdotool type --delay 25 -- '${'$'}TEXT_DEC' && echo 'OK type'"
+        TYPE_CMD="${'$'}(cat <<'VMTYPEEOF'
+TXT="${'$'}(printf '%s' "${'$'}TXT_B64" | base64 -d 2>/dev/null || true)"
+xdotool type --delay 25 -- "${'$'}TXT" && echo 'OK type'
+VMTYPEEOF
+)"
+        run_in_vm "TXT_B64='${'$'}P1'; ${'$'}TYPE_CMD"
         ;;
       key)
         run_in_vm "xdotool key --clearmodifiers '${'$'}P1' && echo 'OK key ${'$'}P1'"
         ;;
       open_browser)
-        URL_DEC="${'$'}(printf '%s' "${'$'}P1" | base64 -d 2>/dev/null || echo 'about:blank')"
-        run_in_vm "
-          BROWSER_BIN=''
-          for b in chromium chromium-browser google-chrome firefox; do
-            if command -v "${'$'}b" >/dev/null 2>&1; then BROWSER_BIN="${'$'}b"; break; fi
-          done
-          if [ -z "${'$'}BROWSER_BIN" ]; then
-            echo 'ERROR: Chromium belum terpasang. Jalankan vm_control action=install_browser terlebih dahulu.'
-            exit 1
-          fi
-          nohup "${'$'}BROWSER_BIN" --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=$DEFAULT_CDP_PORT --window-size=1280,720 "${'$'}URL_DEC" >/tmp/browser.log 2>&1 &
-          sleep 1.2
-          echo "OK browser (${'$'}BROWSER_BIN) dibuka ke ${'$'}URL_DEC"
-        "
+        BROWSER_CMD="${'$'}(cat <<'VMBROWSEREOF'
+VM_URL="${'$'}(printf '%s' "${'$'}VM_URL_B64" | base64 -d 2>/dev/null || true)"
+[ -n "${'$'}VM_URL" ] || VM_URL="about:blank"
+BROWSER_BIN=""
+for b in chromium chromium-browser google-chrome firefox; do
+  if command -v "${'$'}b" >/dev/null 2>&1; then BROWSER_BIN="${'$'}b"; break; fi
+done
+if [ -z "${'$'}BROWSER_BIN" ]; then
+  echo 'ERROR: Chromium belum terpasang. Jalankan vm_control action=install_browser terlebih dahulu.'
+  exit 1
+fi
+nohup "${'$'}BROWSER_BIN" --no-sandbox --disable-dev-shm-usage --disable-gpu --remote-debugging-port=$DEFAULT_CDP_PORT --window-size=1280,720 "${'$'}VM_URL" >/tmp/browser.log 2>&1 &
+sleep 1.2
+echo "OK browser (${'$'}BROWSER_BIN) dibuka ke ${'$'}VM_URL"
+VMBROWSEREOF
+)"
+        run_in_vm "VM_URL_B64='${'$'}P1'; ${'$'}BROWSER_CMD"
         ;;
       open_terminal)
         run_in_vm "nohup xterm -fa 'DejaVu Sans Mono' -fs 11 -bg '#0B0D10' -fg '#ECEFF4' >/tmp/xterm.log 2>&1 & echo 'OK xterm dibuka'"
