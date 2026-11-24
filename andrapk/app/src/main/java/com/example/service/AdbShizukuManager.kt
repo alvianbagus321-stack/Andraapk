@@ -783,7 +783,16 @@ object AdbShizukuManager {
                 putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
                 putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
             }
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (ise: IllegalStateException) {
+                // Pembatasan background-start (Android 8+/MIUI): coba jalur foreground.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    throw ise
+                }
+            }
             true
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send Termux RUN_COMMAND intent: ${e.message}")
