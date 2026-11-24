@@ -257,6 +257,11 @@ class JarvisHttpServer(
             sendResponse(output, 200, script, "text/x-shellscript", method, path, clientIp, "Served setup-mcp.sh")
             return
         }
+        if (path == "/vmbridge.sh") {
+            val script = com.example.service.VirtualComputerManager.getBridgeBootstrapScript()
+            sendResponse(output, 200, script, "text/x-shellscript", method, path, clientIp, "Served vmbridge.sh")
+            return
+        }
 
         if (path.startsWith("/termux/")) {
             handleTermuxDownload(path, output, method, clientIp)

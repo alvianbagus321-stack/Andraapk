@@ -588,6 +588,76 @@ esac
     }
 
     /**
+     * JEMBATAN VM — transport alternatif ketika intent RUN_COMMAND diblokir
+     * (umum di MIUI/HyperOS): daemon bash kecil yang berjalan DI DALAM Termux,
+     * mem-polling folder IPC bersama untuk file *.cmd lalu mengeksekusinya.
+     * Dikombinasikan dengan klaim-lock atomik (mkdir) sehingga bila intent DAN
+     * jembatan sama-sama hidup, perintah tetap dieksekusi tepat satu kali.
+     */
+    fun writeBridgeScript(): File {
+        val ipc = getIpcDir().absolutePath
+        val bridgeFile = File(getVmBaseDir(), "andra_bridge.sh")
+        val content = """
+            #!/data/data/com.termux/files/usr/bin/bash
+            # Jembatan VM Andra Control — eksekutor perintah berbasis file.
+            IPC="$ipc"
+            mkdir -p "${'$'}IPC" 2>/dev/null
+            echo ${'$'}${'$'} > "${'$'}IPC/bridge.pid" 2>/dev/null
+            termux-wake-lock 2>/dev/null || true
+            echo "[jembatan] aktif (pid ${'$'}${'$'})"
+            while true; do
+              date +%s > "${'$'}IPC/bridge.alive" 2>/dev/null
+              for f in "${'$'}IPC"/*.cmd; do
+                [ -e "${'$'}f" ] || continue
+                c=${'$'}(cat "${'$'}f" 2>/dev/null)
+                rm -f "${'$'}f" 2>/dev/null
+                [ -n "${'$'}c" ] && bash -c "${'$'}c" >/dev/null 2>&1 &
+              done
+              sleep 1
+            done
+        """.trimIndent()
+        runCatching { bridgeFile.writeText(content) }
+        return bridgeFile
+    }
+
+    /**
+     * Script bootstrap yang disajikan server lokal di /vmbridge.sh —
+     * dijalankan pengguna di Termux dengan: curl -s http://127.0.0.1:8765/vmbridge.sh | bash
+     * Menulis ulang script jembatan terbaru, mematikan instance lama, menjalankan yang baru,
+     * dan memasang auto-start di ~/.bashrc agar jembatan hidup lagi setiap Termux dibuka.
+     */
+    fun getBridgeBootstrapScript(): String {
+        val bridgePath = writeBridgeScript().absolutePath
+        val ipc = getIpcDir().absolutePath
+        return """
+            #!/data/data/com.termux/files/usr/bin/bash
+            B="$bridgePath"
+            if [ ! -f "${'$'}B" ]; then
+              echo "❌ File jembatan tidak ditemukan: ${'$'}B"
+              echo "   Buka aplikasi Andra Control sekali (panel Komputer Virtual), lalu jalankan perintah ini lagi."
+              exit 1
+            fi
+            pkill -f andra_bridge.sh 2>/dev/null
+            sleep 0.5
+            nohup bash "${'$'}B" >/dev/null 2>&1 &
+            grep -q andra_bridge ~/.bashrc 2>/dev/null || echo '(pgrep -f andra_bridge.sh >/dev/null 2>&1 || nohup bash $bridgePath >/dev/null 2>&1 &)' >> ~/.bashrc
+            sleep 1.5
+            if [ -f "$ipc/bridge.alive" ]; then
+              echo "✅ Jembatan VM AKTIF. Kembali ke aplikasi Andra Control, tekan \"Diagnosa Termux\" lalu \"Mulai VM\"."
+              echo "   (Jembatan otomatis hidup lagi setiap kamu membuka Termux.)"
+            else
+              echo "⚠️ Jembatan dijalankan tapi heartbeat belum terlihat. Tunggu 3 detik lalu cek: ls $ipc/bridge.alive"
+            fi
+        """.trimIndent()
+    }
+
+    /** Jembatan dianggap hidup bila heartbeat diperbarui dalam 15 detik terakhir. */
+    fun isBridgeAlive(): Boolean {
+        val f = File(getIpcDir(), "bridge.alive")
+        return f.exists() && System.currentTimeMillis() - f.lastModified() < 15_000L
+    }
+
+    /**
      * Eksekusi `andra_vm.sh` lewat Termux RUN_COMMAND dengan mekanisme IPC berbasis file
      * agar stdout, exit code, dan status selesai dapat dibaca akurat oleh aplikasi Android.
      */
@@ -632,11 +702,14 @@ esac
         }
 
         val scriptFile = writeControlScript()
+        writeBridgeScript()
         val ipcDir = getIpcDir()
         val jobId = UUID.randomUUID().toString().take(8)
         val outFile = File(ipcDir, "vm_${jobId}.out")
         val rcFile = File(ipcDir, "vm_${jobId}.rc")
         val doneFile = File(ipcDir, "vm_${jobId}.done")
+        val lockDir = File(ipcDir, "vm_${jobId}.lock")
+        val cmdFile = File(ipcDir, "vm_${jobId}.cmd")
 
         val safeArgs = args.joinToString(" ") { arg ->
             "'" + arg.replace("'", "'\\''") + "'"
@@ -650,17 +723,27 @@ esac
             append("printf '%s' \"\$?\" > '").append(rcFile.absolutePath).append("'; ")
             append("touch '").append(doneFile.absolutePath).append("'")
         }
+        // Klaim atomik: intent RUN_COMMAND dan Jembatan VM bisa sama-sama mencoba
+        // menjalankan job ini — mkdir memastikan hanya SATU yang benar-benar jalan.
+        val claimedCmd = "mkdir '${lockDir.absolutePath}' 2>/dev/null || exit 0; $bashCmd"
 
+        // Transport #2 (Jembatan): tulis file perintah agar daemon jembatan di Termux
+        // bisa mengeksekusinya walau intent RUN_COMMAND diblokir sistem (MIUI, dll).
+        runCatching { cmdFile.writeText(claimedCmd) }
+
+        // Transport #1 (intent RUN_COMMAND) — tetap dikirim; yang tercepat yang menang.
         val sent = AdbShizukuManager.sendTermuxRunCommandIntent(
             context = ctx,
             executablePath = "/data/data/com.termux/files/usr/bin/bash",
-            arguments = arrayOf("-c", bashCmd)
+            arguments = arrayOf("-c", claimedCmd)
         )
-        if (!sent) {
+        if (!sent && !isBridgeAlive()) {
+            runCatching { cmdFile.delete(); lockDir.delete() }
             return@withContext Pair(
                 -1,
                 "Gagal mengirim perintah ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "intent ditolak sistem"}. " +
-                    "Buka aplikasi Termux sekali (biarkan di recent apps), lalu coba lagi."
+                    "Buka aplikasi Termux sekali (biarkan di recent apps), lalu coba lagi. " +
+                    "Atau aktifkan Jembatan VM: di Termux jalankan: curl -s http://127.0.0.1:8765/vmbridge.sh | bash"
             )
         }
 
@@ -674,14 +757,14 @@ esac
             if (cancellable && cancelRequested) {
                 sendVmKillSignal(ctx)
                 delay(600)
-                runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
+                runCatching { outFile.delete(); rcFile.delete(); doneFile.delete(); cmdFile.delete(); lockDir.delete() }
                 return@withContext Pair(-3, "Dibatalkan oleh pengguna.")
             }
             if (doneFile.exists()) {
                 delay(120)
                 val out = runCatching { outFile.readText() }.getOrDefault("").trim()
                 val rc = runCatching { rcFile.readText().trim().toInt() }.getOrDefault(0)
-                runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
+                runCatching { outFile.delete(); rcFile.delete(); doneFile.delete(); cmdFile.delete(); lockDir.delete() }
                 return@withContext Pair(rc, out)
             }
             // Tail inkremental: baca HANYA byte baru sejak pembacaan terakhir lalu
@@ -712,7 +795,7 @@ esac
         }
 
         val partial = runCatching { if (outFile.exists()) outFile.readText().trim() else "" }.getOrDefault("")
-        runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
+        runCatching { outFile.delete(); rcFile.delete(); doneFile.delete(); cmdFile.delete(); lockDir.delete() }
 
         val hint = if (partial.isBlank()) {
             "Timeout menunggu respons Termux (${timeoutMs / 1000}d) — Termux tidak menulis output apa pun. Penyebab paling umum:\n" +
@@ -720,6 +803,7 @@ esac
                 "2. Di Termux belum dijalankan: echo 'allow-external-apps=true' >> ~/.termux/termux.properties && termux-reload-settings\n" +
                 "3. HP Xiaomi/Redmi: aktifkan 'Mulai otomatis' (Autostart) untuk Termux di Keamanan > Izin, dan matikan pembatasan baterai Termux.\n" +
                 "4. Buka aplikasi Termux sekali dan biarkan tetap di recent apps saat setup berjalan.\n" +
+                "5. PALING AMPUH — aktifkan Jembatan VM: di Termux jalankan: curl -s http://127.0.0.1:8765/vmbridge.sh | bash\n" +
                 "Gunakan tombol \"Diagnosa Termux\" di panel VM untuk pengecekan otomatis."
         } else {
             "Perintah masih berjalan / timeout (${timeoutMs / 1000}d).\nOutput terakhir:\n$partial"
@@ -837,18 +921,30 @@ esac
             null -> appendLog("SYSTEM", "[4] INFO: Status izin penyimpanan Termux tidak terbaca — lanjut uji langsung.")
         }
 
-        // 5. Kirim probe: Termux harus menjalankan perintah DAN menulis balik file.
+        // 5. Status Jembatan VM (transport alternatif bila intent diblokir sistem).
+        writeBridgeScript()
+        val bridgeAlive = isBridgeAlive()
+        appendLog(
+            "SYSTEM",
+            if (bridgeAlive) "[5] OK: Jembatan VM aktif di Termux."
+            else "[5] INFO: Jembatan VM belum aktif. Bila langkah [6] gagal, aktifkan dengan menjalankan di Termux: curl -s http://127.0.0.1:8765/vmbridge.sh | bash"
+        )
+
+        // 6. Kirim probe lewat KEDUA jalur: intent RUN_COMMAND + file .cmd untuk jembatan.
         val probeFile = File(ipcDir, "probe_${System.currentTimeMillis()}.ok")
         val probeCmd = "echo ANDRA_PROBE_OK > '${probeFile.absolutePath}' 2>/dev/null || " +
             "echo ANDRA_PROBE_OK > '${probeFile.absolutePath.replace("/storage/emulated/0", "/sdcard")}' 2>/dev/null"
-        appendLog("SYSTEM", "[5] Mengirim perintah uji ke Termux (tunggu maks 12 detik)...")
+        val probeCmdFile = File(ipcDir, "probe_${System.currentTimeMillis()}.cmd")
+        runCatching { probeCmdFile.writeText(probeCmd) }
+        appendLog("SYSTEM", "[6] Mengirim perintah uji ke Termux (tunggu maks 12 detik)...")
         val sent = AdbShizukuManager.sendTermuxRunCommandIntent(
             context = ctx,
             executablePath = "/data/data/com.termux/files/usr/bin/bash",
             arguments = arrayOf("-c", probeCmd)
         )
-        if (!sent) {
-            appendLog("SYSTEM", "[5] GAGAL mengirim intent ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "ditolak sistem"}. Buka Termux sekali, biarkan di recent apps, lalu coba lagi.", isError = true)
+        if (!sent && !bridgeAlive) {
+            appendLog("SYSTEM", "[6] GAGAL mengirim intent ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "ditolak sistem"}. Buka Termux sekali, biarkan di recent apps, lalu coba lagi — atau aktifkan Jembatan VM (lihat langkah [5]).", isError = true)
+            runCatching { probeCmdFile.delete() }
             return@withContext ToolResult("error", message = "Intent RUN_COMMAND gagal dikirim.")
         }
         val deadline = System.currentTimeMillis() + 12_000L
@@ -857,17 +953,17 @@ esac
             if (probeFile.exists()) { probeOk = true; break }
             delay(400)
         }
-        runCatching { probeFile.delete() }
+        runCatching { probeFile.delete(); probeCmdFile.delete() }
 
         if (probeOk) {
-            appendLog("SYSTEM", "[5] OK: Termux merespons dan bisa menulis file. KONEKSI SEHAT ✓ — silakan mulai setup VM.")
+            appendLog("SYSTEM", "[6] OK: Termux merespons dan bisa menulis file. KONEKSI SEHAT ✓ — silakan mulai setup VM.")
             return@withContext ToolResult("ok", result = "Koneksi Termux sehat.")
         }
 
         appendLog(
             "SYSTEM",
-            "[5] GAGAL: Termux tidak merespons / tidak bisa menulis balik. Perbaiki berurutan:\n" +
-                "a. Buka Termux, jalankan: termux-setup-storage — lalu IZINKAN akses penyimpanan (ini yang paling sering terlewat).\n" +
+            "[6] GAGAL: Termux tidak merespons lewat intent maupun jembatan. Perbaiki berurutan:\n" +
+                "a. PALING AMPUH: aktifkan Jembatan VM — buka Termux lalu jalankan: curl -s http://127.0.0.1:8765/vmbridge.sh | bash — lalu diagnosa ulang.\n" +
                 "b. Pastikan sudah pernah: echo 'allow-external-apps=true' >> ~/.termux/termux.properties && termux-reload-settings\n" +
                 "c. HP Xiaomi/Redmi/POCO: Setelan > Aplikasi > Termux > aktifkan \"Mulai otomatis\" (Autostart) dan set Baterai ke \"Tanpa batasan\".\n" +
                 "d. Biarkan Termux terbuka di recent apps, lalu tekan \"Diagnosa Termux\" lagi.",
