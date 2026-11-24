@@ -355,6 +355,22 @@ case "${'$'}ACTION" in
     EXTRA_PKGS="${'$'}{ARG5:-}"
     ensure_proot_distro || { echo "ERROR: Gagal memasang proot-distro"; exit 1; }
     if ! is_distro_installed; then
+      # Jika APLIKASI sudah mengunduh tarball rootfs ke cache bersama, salin ke
+      # dlcache proot-distro agar instalasi langsung dari file lokal (tanpa unduh ulang).
+      SHARED_CACHE="/sdcard/JARVIS/vm/cache"
+      DLCACHE="${'$'}PREFIX/var/lib/proot-distro/dlcache"
+      if [ -d "${'$'}SHARED_CACHE" ]; then
+        mkdir -p "${'$'}DLCACHE"
+        for f in "${'$'}SHARED_CACHE"/*; do
+          [ -f "${'$'}f" ] || continue
+          BN="${'$'}(basename "${'$'}f")"
+          case "${'$'}BN" in *.part) continue ;; esac
+          if [ ! -f "${'$'}DLCACHE/${'$'}BN" ]; then
+            echo "[VM] Memakai rootfs hasil unduhan aplikasi: ${'$'}BN"
+            cp "${'$'}f" "${'$'}DLCACHE/${'$'}BN" || true
+          fi
+        done
+      fi
       echo "[VM] Mengunduh & memasang rootfs ${'$'}DISTRO (ARM64)..."
       proot-distro install "${'$'}DISTRO" || { echo "ERROR: Gagal memasang distro ${'$'}DISTRO"; exit 1; }
     else
@@ -421,6 +437,22 @@ case "${'$'}ACTION" in
     pkill -f "chromium.*remote-debugging-port=${'$'}CDP_PORT" 2>/dev/null || true
     pkill -f "proot-distro login ${'$'}DISTRO" 2>/dev/null || true
     echo "[VM] Komputer Virtual dihentikan."
+    ;;
+
+  rootfs_info)
+    # Info URL/checksum tarball rootfs dari plugin proot-distro — dipakai aplikasi
+    # untuk mengunduh rootfs sendiri (progres akurat, tanpa bergantung curl Termux).
+    ensure_proot_distro || { echo "ERROR: Gagal memasang proot-distro"; exit 1; }
+    PLUGIN="${'$'}PREFIX/etc/proot-distro/${'$'}DISTRO.sh"
+    if [ ! -f "${'$'}PLUGIN" ]; then
+      echo "ERROR: Plugin ${'$'}DISTRO tidak ditemukan di ${'$'}PLUGIN"
+      exit 1
+    fi
+    RF_URL="${'$'}(. "${'$'}PLUGIN" >/dev/null 2>&1; echo "${'$'}{TARBALL_URL[aarch64]:-}")"
+    RF_SHA="${'$'}(. "${'$'}PLUGIN" >/dev/null 2>&1; echo "${'$'}{TARBALL_SHA256[aarch64]:-}")"
+    echo "URL=${'$'}RF_URL"
+    echo "SHA256=${'$'}RF_SHA"
+    [ -n "${'$'}RF_URL" ] && echo "FILE=${'$'}(basename "${'$'}RF_URL")"
     ;;
 
   status)
@@ -972,6 +1004,104 @@ esac
         ToolResult("error", message = "Termux tidak merespons probe.")
     }
 
+    /**
+     * Mengunduh tarball rootfs langsung oleh APLIKASI (HttpURLConnection) dengan progres
+     * persen/MB/kecepatan live di UI, verifikasi SHA-256, lalu menaruhnya di cache bersama
+     * (/sdcard/JARVIS/vm/cache) agar proot-distro di Termux memasang dari file lokal tanpa
+     * mengunduh ulang. Best-effort: bila gagal apa pun alasannya, setup tetap berjalan dan
+     * proot-distro mengunduh sendiri seperti biasa.
+     */
+    private suspend fun preDownloadRootfs(distro: VmDistro): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val (rc, out) = invokeTermuxVmScript("rootfs_info", distro, timeoutMs = 90_000L)
+            if (rc != 0) {
+                appendLog("SYSTEM", "Info rootfs tidak tersedia — unduhan akan dilakukan proot-distro di Termux.")
+                return@withContext false
+            }
+            val url = Regex("(?m)^URL=(\\S+)").find(out)?.groupValues?.get(1).orEmpty()
+            val sha = Regex("(?m)^SHA256=(\\S+)").find(out)?.groupValues?.get(1).orEmpty()
+            val fileName = Regex("(?m)^FILE=(\\S+)").find(out)?.groupValues?.get(1).orEmpty()
+            if (!url.startsWith("http") || fileName.isBlank()) return@withContext false
+
+            val cacheDir = File(getVmBaseDir(), "cache").apply { if (!exists()) mkdirs() }
+            val target = File(cacheDir, fileName)
+            if (target.exists() && sha.isNotBlank() && sha256Of(target).equals(sha, ignoreCase = true)) {
+                appendLog("SYSTEM", "Rootfs sudah ada di cache aplikasi (${target.length() / 1_048_576} MB, checksum cocok) — dipakai langsung.")
+                return@withContext true
+            }
+
+            appendLog("SYSTEM", "Mengunduh rootfs lewat APLIKASI (bukan Termux): $fileName")
+            val tmp = File(cacheDir, "$fileName.part")
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                setRequestProperty("User-Agent", "AndraControl-VM")
+            }
+            val total = conn.contentLengthLong
+            val startAt = System.currentTimeMillis()
+            var read = 0L
+            var lastStatus = 0L
+            var lastLog = 0L
+            conn.inputStream.use { input ->
+                tmp.outputStream().use { os ->
+                    val buf = ByteArray(256 * 1024)
+                    while (true) {
+                        if (cancelRequested) {
+                            runCatching { tmp.delete() }
+                            appendLog("SYSTEM", "Unduhan rootfs dibatalkan.")
+                            return@withContext false
+                        }
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        os.write(buf, 0, n)
+                        read += n
+                        val now = System.currentTimeMillis()
+                        if (now - lastStatus >= 1_000L) {
+                            lastStatus = now
+                            val mb = read / 1_048_576
+                            val pct = if (total > 0) " (${read * 100 / total}%)" else ""
+                            val speedKb = (read / 1024.0 / ((now - startAt).coerceAtLeast(1) / 1000.0)).toInt()
+                            val line = "Unduh rootfs: $mb MB" +
+                                (if (total > 0) " / ${total / 1_048_576} MB" else "") +
+                                "$pct · $speedKb KB/s"
+                            _status.value = _status.value.copy(statusDetail = line)
+                            if (now - lastLog >= 5_000L) {
+                                lastLog = now
+                                appendLog("VM", line)
+                            }
+                        }
+                    }
+                }
+            }
+            if (sha.isNotBlank() && !sha256Of(tmp).equals(sha, ignoreCase = true)) {
+                appendLog("SYSTEM", "Checksum rootfs tidak cocok — file dibuang; proot-distro akan mengunduh sendiri.", isError = true)
+                runCatching { tmp.delete() }
+                return@withContext false
+            }
+            if (!tmp.renameTo(target)) {
+                runCatching { tmp.copyTo(target, overwrite = true); tmp.delete() }
+            }
+            appendLog("SYSTEM", "Rootfs selesai diunduh aplikasi (${target.length() / 1_048_576} MB) ✓ — Termux tinggal memasang dari file lokal.")
+            true
+        } catch (e: Exception) {
+            appendLog("SYSTEM", "Unduhan via aplikasi gagal (${e.message}) — proot-distro akan mengunduh sendiri.", isError = true)
+            false
+        }
+    }
+
+    private fun sha256Of(f: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        f.inputStream().use { ins ->
+            val buf = ByteArray(1 shl 16)
+            while (true) {
+                val n = ins.read(buf)
+                if (n < 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun isNoVncReachable(port: Int = _status.value.novncPort): Boolean {
         return try {
             val conn = (URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection).apply {
@@ -1165,8 +1295,17 @@ esac
 
         val alreadyInstalled = stOut.contains("INSTALLED=yes")
         if (!alreadyInstalled) {
-            _status.value = _status.value.copy(statusDetail = "Mengunduh & memasang ${distro.displayName} (3–15 menit tergantung koneksi)...")
-            appendLog("SYSTEM", "Mengunduh rootfs ${distro.displayName} dan paket desktop/CLI...")
+            // Unduh rootfs oleh APLIKASI sendiri (progres akurat, tidak bergantung
+            // jaringan/curl Termux). Best-effort — gagal pun setup tetap lanjut.
+            _status.value = _status.value.copy(statusDetail = "Menyiapkan unduhan rootfs ${distro.displayName}...")
+            preDownloadRootfs(distro)
+            if (cancelRequested) {
+                _status.value = _status.value.copy(state = VmState.STOPPED, statusDetail = "Setup dibatalkan", lastError = null)
+                appendLog("SYSTEM", "Setup dibatalkan saat unduhan rootfs.")
+                return@withContext ToolResult("ok", result = "Setup Komputer Virtual dibatalkan oleh pengguna.")
+            }
+            _status.value = _status.value.copy(statusDetail = "Memasang ${distro.displayName} (ekstraksi + paket dasar)...")
+            appendLog("SYSTEM", "Memasang rootfs ${distro.displayName} dan paket desktop/CLI...")
             appendLog("VM", "$ andra_vm.sh setup ${distro.id} ${mode.id} browser=${if (includeBrowser) "1" else "0"}")
             val (setupRc, setupOut) = invokeTermuxVmScript(
                 action = "setup",
