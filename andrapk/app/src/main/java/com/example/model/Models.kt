@@ -1,5 +1,7 @@
 package com.example.model
 
+import androidx.compose.runtime.Immutable
+
 /**
  * Data model representing an interactive or visible UI element inspected from the screen.
  */
@@ -57,6 +59,7 @@ data class ToolResult(
 /**
  * Represents an entry in the live HTTP server activity log.
  */
+@Immutable
 data class ServerLogItem(
     val id: Long = System.currentTimeMillis(),
     val timestamp: Long = System.currentTimeMillis(),
@@ -72,6 +75,7 @@ data class ServerLogItem(
 /**
  * System telemetry state.
  */
+@Immutable
 data class SystemTelemetry(
     val batteryLevel: Int = -1,
     val isCharging: Boolean = false,
@@ -93,6 +97,7 @@ enum class ChatSender {
     USER, AI, SYSTEM
 }
 
+@Immutable
 data class ChatMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
     val sender: ChatSender,
@@ -107,6 +112,7 @@ data class ChatMessage(
     val attachmentMimeType: String? = null
 )
 
+@Immutable
 data class ChatSession(
     val id: String = java.util.UUID.randomUUID().toString(),
     val title: String = "Sesi Baru",

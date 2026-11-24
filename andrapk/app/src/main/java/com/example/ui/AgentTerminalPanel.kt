@@ -75,7 +75,9 @@ fun AgentTerminalConsoleCard(
 
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) {
-            consoleScroll.animateScrollTo(consoleScroll.maxValue)
+            // Lompat langsung (tanpa animasi) — output terminal yang deras tidak
+            // boleh memicu antrean animasi scroll yang menurunkan FPS.
+            consoleScroll.scrollTo(consoleScroll.maxValue)
         }
     }
 

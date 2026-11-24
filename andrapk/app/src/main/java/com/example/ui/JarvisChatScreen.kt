@@ -51,6 +51,8 @@ import com.example.service.ToolManager
 import com.example.service.VmState
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -129,9 +131,7 @@ fun JarvisChatScreen(viewModel: JarvisViewModel) {
     val onPreviewCode = remember { { payload: CodePreviewPayload -> codeToPreview = payload } }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(JarvisBackground)
+        modifier = Modifier.fillMaxSize()
     ) {
         ChatTopHeader(
             viewModel = viewModel,
@@ -467,11 +467,17 @@ private fun ChatSubHeader(
 ) {
     val context = LocalContext.current
     val currentSession by viewModel.currentSession.collectAsStateWithLifecycle()
-    val terminalEntries by com.example.service.AgentTerminalManager.entries.collectAsStateWithLifecycle()
-    val termCount = terminalEntries.size
+    // Hanya amati JUMLAH entri terminal (bukan isinya) agar output terminal yang deras
+    // tidak me-recompose sub-header chat berulang kali.
+    val termCountFlow = remember {
+        com.example.service.AgentTerminalManager.entries
+            .map { it.size }
+            .distinctUntilChanged()
+    }
+    val termCount by termCountFlow.collectAsStateWithLifecycle(initialValue = 0)
 
     Surface(
-        color = JarvisBackground,
+        color = Color.Transparent,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
