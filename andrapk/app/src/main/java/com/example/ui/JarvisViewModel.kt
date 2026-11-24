@@ -288,7 +288,6 @@ class JarvisViewModel : ViewModel() {
             _isChatAiThinking.value = false
             _chatStatusText.value = ""
 
-            val appContext = com.example.JarvisApp.instance
             if (com.example.ui.JarvisOverlayManager.canDrawOverlay(appContext)) {
                 com.example.ui.JarvisOverlayManager.onResult(
                     command = displayPrompt,

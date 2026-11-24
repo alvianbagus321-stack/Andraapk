@@ -888,7 +888,7 @@ object AiChatService {
         return false
     }
 
-    private fun callOpenAiRest(
+    private suspend fun callOpenAiRest(
         baseUrl: String,
         model: String,
         apiKey: String,

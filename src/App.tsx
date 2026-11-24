@@ -207,8 +207,18 @@ export default function App() {
           </button>
 
           <a
+            href="/api/apk/download"
+            download="Andraapk-debug.apk"
+            title="Unduh APK debug terbaru"
+            className="ml-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium bg-[#17452E] text-[#86E6B0] border border-[#276844] hover:bg-[#205735] transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Download APK</span>
+          </a>
+
+          <a
             href="/api/workspace/export-zip"
-            download="Andrapk-v2.60.zip"
+            download="Andrapk-v2.61.zip"
             title="Unduh seluruh proyek andrapk sebagai ZIP"
             className="ml-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium bg-[#1D3252] text-[#8CC0FF] border border-[#2F5387] hover:bg-[#25406B] transition-colors"
           >

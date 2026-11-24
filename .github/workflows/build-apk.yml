@@ -29,47 +29,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Detect Android project directory
-        run: |
-          if [ -f "andrapk/app/build.gradle.kts" ]; then
-            ANDROID_DIR="${GITHUB_WORKSPACE}/andrapk"
-          elif [ -f "app/build.gradle.kts" ]; then
-            ANDROID_DIR="${GITHUB_WORKSPACE}"
-          else
-            echo "::error::Tidak menemukan app/build.gradle.kts di root maupun di folder andrapk/."
-            exit 1
-          fi
-          echo "ANDROID_DIR=${ANDROID_DIR}" >> "$GITHUB_ENV"
-          echo "Detected Android project at: ${ANDROID_DIR}"
-
-      - name: Setup JDK 21
+      - name: Setup JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
+          cache-dependency-path: |
+            andrapk/gradle/libs.versions.toml
+            andrapk/gradle/wrapper/gradle-wrapper.properties
+            andrapk/**/build.gradle.kts
 
       - name: Prepare .env & Android SDK licenses
-        working-directory: ${{ env.ANDROID_DIR }}
+        working-directory: andrapk
         run: |
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
           fi
-          SDKMGR="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          if [ -x "$SDKMGR" ]; then
-            yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-            yes | "$SDKMGR" "platform-tools" "platforms;android-36.1" "build-tools;36.0.0" >/dev/null 2>&1 \
-              || yes | "$SDKMGR" "platform-tools" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 \
-              || true
-          fi
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36.1" \
+            "build-tools;36.0.0"
 
       - name: Prepare signing keystore
         id: keystore
-        working-directory: ${{ env.ANDROID_DIR }}
+        working-directory: andrapk
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -77,7 +68,7 @@ jobs:
         run: |
           BUILD_TYPE="${{ inputs.build_type || 'release' }}"
           if [ "$BUILD_TYPE" = "release" ]; then
-            KS_FILE="${ANDROID_DIR}/my-upload-key.jks"
+            KS_FILE="${PWD}/my-upload-key.jks"
             if [ -n "$KEYSTORE_BASE64" ]; then
               echo "$KEYSTORE_BASE64" | base64 -d > "$KS_FILE"
               echo "STORE_PASSWORD=${SECRET_STORE_PASSWORD}" >> "$GITHUB_ENV"
@@ -108,18 +99,19 @@ jobs:
           fi
 
       - name: Build APK
-        working-directory: ${{ env.ANDROID_DIR }}
+        working-directory: andrapk
         run: |
+          chmod +x gradlew
           BUILD_TYPE="${{ inputs.build_type || 'release' }}"
           if [ "$BUILD_TYPE" = "debug" ]; then
-            gradle assembleDebug --no-daemon --stacktrace
+            ./gradlew assembleDebug --no-daemon --stacktrace
           else
-            gradle assembleRelease --no-daemon --stacktrace
+            ./gradlew assembleRelease --no-daemon --stacktrace
           fi
 
       - name: Prepare named APK output
         id: apk
-        working-directory: ${{ env.ANDROID_DIR }}
+        working-directory: andrapk
         run: |
           BUILD_TYPE="${{ inputs.build_type || 'release' }}"
           VER_NAME="$(sed -n 's/.*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)"

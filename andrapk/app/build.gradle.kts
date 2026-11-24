@@ -51,6 +51,7 @@ android {
       }
     }
     debug {
+      applicationIdSuffix = ".debug"
       val debugCfg = signingConfigs.getByName("debugConfig")
       if (debugCfg.storeFile?.exists() == true) {
         signingConfig = debugCfg
@@ -92,6 +93,7 @@ dependencies {
   implementation(libs.shizuku.provider)
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
+  implementation(libs.androidx.fragment)
   // implementation(libs.androidx.camera.camera2)
   // implementation(libs.androidx.camera.core)
   // implementation(libs.androidx.camera.lifecycle)

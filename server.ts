@@ -318,6 +318,18 @@ async function startServer() {
     res.sendFile(resolved.absPath);
   });
 
+  app.get('/api/apk/download', (_req, res) => {
+    const apkPath = path.join(
+      WORKSPACE_ROOT,
+      'andrapk/app/build/outputs/apk/debug/app-debug.apk'
+    );
+    if (!fs.existsSync(apkPath)) {
+      res.status(404).json({ error: 'APK belum tersedia. Jalankan build debug terlebih dahulu.' });
+      return;
+    }
+    res.download(apkPath, 'Andraapk-debug.apk');
+  });
+
   app.get('/api/workspace/export-zip', async (_req, res) => {
     const andrapkDir = path.join(WORKSPACE_ROOT, 'andrapk');
     if (!fs.existsSync(andrapkDir)) {
