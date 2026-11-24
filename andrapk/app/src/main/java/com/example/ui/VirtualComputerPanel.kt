@@ -415,11 +415,7 @@ fun VirtualComputerViewerDialog(
                                 }
                                 if (status.state == VmState.RUNNING) {
                                     IconButton(
-                                        onClick = {
-                                            scope.launch(Dispatchers.IO) {
-                                                VirtualComputerManager.stopVm()
-                                            }
-                                        },
+                                        onClick = { VirtualComputerManager.stopVmAsync() },
                                         modifier = Modifier.size(40.dp)
                                     ) {
                                         Icon(
@@ -508,11 +504,7 @@ fun VirtualComputerViewerDialog(
                         } else {
                             VmOfflineOrProvisioningBody(
                                 status = status,
-                                onStart = {
-                                    scope.launch(Dispatchers.IO) {
-                                        VirtualComputerManager.startOrProvisionVm(context)
-                                    }
-                                }
+                                onStart = { VirtualComputerManager.startOrProvisionVmAsync(context) }
                             )
                         }
                     } else {
@@ -896,7 +888,6 @@ fun VirtualComputerControlCard(
 ) {
     val context = LocalContext.current
     val status by VirtualComputerManager.status.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
     var showDestroyConfirm by remember { mutableStateOf(false) }
 
     val stateColor = when (status.state) {
@@ -1135,11 +1126,7 @@ fun VirtualComputerControlCard(
                         )
                     }
                     OutlinedButton(
-                        onClick = {
-                            scope.launch(Dispatchers.IO) {
-                                VirtualComputerManager.stopVm()
-                            }
-                        },
+                        onClick = { VirtualComputerManager.stopVmAsync() },
                         modifier = Modifier
                             .weight(0.9f)
                             .heightIn(min = 44.dp),
@@ -1151,11 +1138,7 @@ fun VirtualComputerControlCard(
                     }
                 } else {
                     Button(
-                        onClick = {
-                            scope.launch(Dispatchers.IO) {
-                                VirtualComputerManager.startOrProvisionVm(context)
-                            }
-                        },
+                        onClick = { VirtualComputerManager.startOrProvisionVmAsync(context) },
                         enabled = status.state != VmState.PROVISIONING,
                         modifier = Modifier
                             .weight(1.3f)
@@ -1233,9 +1216,7 @@ fun VirtualComputerControlCard(
                 Button(
                     onClick = {
                         showDestroyConfirm = false
-                        scope.launch(Dispatchers.IO) {
-                            VirtualComputerManager.destroyVm()
-                        }
+                        VirtualComputerManager.destroyVmAsync()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = JarvisRed, contentColor = Color.White),
                     shape = RoundedCornerShape(8.dp)

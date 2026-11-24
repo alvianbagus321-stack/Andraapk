@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -128,6 +129,9 @@ object VirtualComputerManager {
     private const val DEFAULT_RES = "1280x720"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Mencegah dua proses provisioning berjalan bersamaan (setup ganda merusak rootfs). */
+    private val provisioningMutex = Mutex()
 
     private val _status = MutableStateFlow(VmStatus())
     val status: StateFlow<VmStatus> = _status.asStateFlow()
@@ -315,7 +319,7 @@ case "${'$'}ACTION" in
       INSTALL_LIST="${'$'}BASE_PKGS ${'$'}EXTRA_PKGS"
     fi
 
-    run_in_vm "export DEBIAN_FRONTEND=noninteractive; apt-get update -y && apt-get install -y --no-install-recommends ${'$'}INSTALL_LIST || (apt-get update -y && apt-get install -y --no-install-recommends ${'$'}BASE_PKGS ${'$'}GUI_PKGS)"
+    run_in_vm "export DEBIAN_FRONTEND=noninteractive; apt-get update -y && apt-get install -y --no-install-recommends ${'$'}INSTALL_LIST || (apt-get update -y && apt-get install -y --no-install-recommends ${'$'}INSTALL_LIST)"
     echo "[VM] Setup selesai untuk ${'$'}DISTRO (mode=${'$'}MODE)."
     ;;
 
@@ -535,7 +539,8 @@ esac
         action: String,
         distro: VmDistro = _status.value.distro,
         args: List<String> = emptyList(),
-        timeoutMs: Long = 60_000L
+        timeoutMs: Long = 60_000L,
+        onPartialOutput: ((String) -> Unit)? = null
     ): Pair<Int, String> = withContext(Dispatchers.IO) {
         val ctx = JarvisApp.instance
         if (!AdbShizukuManager.isTermuxInstalled(ctx)) {
@@ -576,6 +581,8 @@ esac
         }
 
         val deadline = System.currentTimeMillis() + timeoutMs
+        var lastProgressCheck = 0L
+        var lastReportedLine = ""
         while (System.currentTimeMillis() < deadline) {
             if (doneFile.exists()) {
                 delay(120)
@@ -583,6 +590,21 @@ esac
                 val rc = runCatching { rcFile.readText().trim().toInt() }.getOrDefault(0)
                 runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
                 return@withContext Pair(rc, out)
+            }
+            // Laporkan progres live (baris terakhir output) tiap ~2.5 detik agar
+            // pengguna melihat unduhan/instalasi berjalan — bukan tampak menggantung.
+            val now = System.currentTimeMillis()
+            if (onPartialOutput != null && now - lastProgressCheck >= 2_500L) {
+                lastProgressCheck = now
+                val lastLine = runCatching {
+                    if (outFile.exists()) {
+                        outFile.readText().trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+                    } else ""
+                }.getOrDefault("")
+                if (lastLine.isNotBlank() && lastLine != lastReportedLine) {
+                    lastReportedLine = lastLine
+                    onPartialOutput(lastLine.take(160))
+                }
             }
             delay(250)
         }
@@ -725,6 +747,24 @@ esac
     // Lifecycle VM: Provision, Start, Stop, Restart, Status, Destroy
     // =========================================================================
 
+    /**
+     * Versi fire-and-forget untuk dipanggil dari UI (tombol Mulai/Hentikan/Hapus).
+     * WAJIB dipakai UI alih-alih rememberCoroutineScope: proses provisioning berjalan
+     * di scope internal manager sehingga TIDAK ikut dibatalkan saat dialog ditutup
+     * atau pengguna pindah tab (penyebab status macet di "Menyiapkan..." selamanya).
+     */
+    fun startOrProvisionVmAsync(context: Context = JarvisApp.instance) {
+        scope.launch { startOrProvisionVm(context) }
+    }
+
+    fun stopVmAsync() {
+        scope.launch { stopVm() }
+    }
+
+    fun destroyVmAsync() {
+        scope.launch { destroyVm() }
+    }
+
     suspend fun startOrProvisionVm(
         context: Context = JarvisApp.instance,
         distro: VmDistro = _status.value.distro,
@@ -733,6 +773,17 @@ esac
         extraPackages: List<String> = emptyList()
     ): ToolResult = withContext(Dispatchers.IO) {
         ensurePrefsLoaded(context)
+
+        // Guard: jangan jalankan setup ganda (mis. AI retry atau pengguna menekan tombol dua kali).
+        // Dua `proot-distro install` paralel saling merusak rootfs & lock apt.
+        if (!provisioningMutex.tryLock()) {
+            return@withContext ToolResult(
+                status = "error",
+                errorCode = "PROVISIONING_IN_PROGRESS",
+                message = "Penyiapan Komputer Virtual sedang berjalan. Tunggu hingga selesai — progres live tampil di tab Terminal VM."
+            )
+        }
+        try {
 
         if (!AdbShizukuManager.isTermuxInstalled(context)) {
             val err = "Termux belum terpasang. Pasang Termux dari F-Droid terlebih dahulu untuk menjalankan Komputer Virtual Linux."
@@ -763,13 +814,23 @@ esac
 
         val alreadyInstalled = stOut.contains("INSTALLED=yes")
         if (!alreadyInstalled) {
-            _status.value = _status.value.copy(statusDetail = "Mengunduh & memasang ${distro.displayName} (butuh 1–3 menit)...")
+            _status.value = _status.value.copy(statusDetail = "Mengunduh & memasang ${distro.displayName} (3–15 menit tergantung koneksi)...")
             appendLog("SYSTEM", "Mengunduh rootfs ${distro.displayName} dan paket desktop/CLI...")
+            var lastLoggedProgress = 0L
             val (setupRc, setupOut) = invokeTermuxVmScript(
                 action = "setup",
                 distro = distro,
                 args = listOf(mode.id, if (includeBrowser) "1" else "0", extraPackages.joinToString(" ")),
-                timeoutMs = 300_000L
+                timeoutMs = 1_200_000L,
+                onPartialOutput = { line ->
+                    // Progres live: statusDetail selalu diperbarui; log VM maksimal tiap 10 detik.
+                    _status.value = _status.value.copy(statusDetail = line.take(96))
+                    val now = System.currentTimeMillis()
+                    if (now - lastLoggedProgress >= 10_000L) {
+                        lastLoggedProgress = now
+                        appendLog("VM", line)
+                    }
+                }
             )
             if (setupOut.isNotBlank()) appendLog("VM", setupOut.takeLast(1500), isError = setupRc != 0)
             if (setupRc != 0) {
@@ -825,6 +886,10 @@ esac
             result = "Komputer Virtual berhasil dijalankan (${distro.displayName} · ${mode.displayName}).\n" +
                 if (mode == VmMode.DESKTOP_GUI) "Live Viewer noVNC: ${_status.value.novncUrl}" else "Siap menerima perintah shell melalui vm_exec."
         )
+
+        } finally {
+            provisioningMutex.unlock()
+        }
     }
 
     suspend fun stopVm(): ToolResult = withContext(Dispatchers.IO) {
