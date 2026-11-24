@@ -69,6 +69,35 @@ object AdbShizukuManager {
         }
     }
 
+    /**
+     * Mengecek apakah TERMUX sudah diberi izin penyimpanan (hasil `termux-setup-storage`).
+     * Termux menargetkan API 28 (legacy storage), jadi grant WRITE/READ_EXTERNAL_STORAGE
+     * menentukan apakah Termux bisa menulis ke /storage/emulated/0 (folder IPC bersama).
+     * Return: true = diberikan, false = DITOLAK (penyebab pasti timeout), null = tak terbaca.
+     */
+    fun isTermuxStorageGranted(context: Context): Boolean? {
+        return try {
+            val pm = context.packageManager
+            val info = pm.getPackageInfo(TERMUX_PACKAGE, PackageManager.GET_PERMISSIONS)
+            val perms = info.requestedPermissions ?: return null
+            val flags = info.requestedPermissionsFlags ?: return null
+            var found = false
+            for (i in perms.indices) {
+                if (perms[i] == "android.permission.WRITE_EXTERNAL_STORAGE" ||
+                    perms[i] == "android.permission.READ_EXTERNAL_STORAGE"
+                ) {
+                    found = true
+                    if ((flags[i] and android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0) {
+                        return true
+                    }
+                }
+            }
+            if (found) false else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun isManageStorageGranted(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Environment.isExternalStorageManager()

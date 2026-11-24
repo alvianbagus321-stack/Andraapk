@@ -619,6 +619,18 @@ esac
             )
         }
 
+        // KRITIS #2: TERMUX juga harus punya izin penyimpanan agar bisa menulis balik
+        // hasil perintah ke folder bersama. Ini bisa dicek langsung via PackageManager.
+        if (AdbShizukuManager.isTermuxStorageGranted(ctx) == false) {
+            return@withContext Pair(
+                -1,
+                "TERMUX belum diberi izin penyimpanan — inilah penyebab timeout. Perbaiki:\n" +
+                    "1. Buka Termux, jalankan: termux-setup-storage lalu tekan IZINKAN.\n" +
+                    "2. Atau manual: Setelan > Aplikasi > Termux > Izin > Penyimpanan/File dan media > Izinkan.\n" +
+                    "Setelah itu coba lagi."
+            )
+        }
+
         val scriptFile = writeControlScript()
         val ipcDir = getIpcDir()
         val jobId = UUID.randomUUID().toString().take(8)
@@ -808,18 +820,35 @@ esac
         }
         appendLog("SYSTEM", "[3] OK: Aplikasi bisa menulis folder pertukaran.")
 
-        // 4. Kirim probe: Termux harus menjalankan perintah DAN menulis balik file.
+        // 4. Termux punya izin penyimpanan? (hasil termux-setup-storage)
+        when (AdbShizukuManager.isTermuxStorageGranted(ctx)) {
+            true -> appendLog("SYSTEM", "[4] OK: Termux punya izin penyimpanan.")
+            false -> {
+                appendLog(
+                    "SYSTEM",
+                    "[4] GAGAL: TERMUX belum diberi izin penyimpanan — ini penyebab timeout!\n" +
+                        "Perbaiki: buka Termux, jalankan: termux-setup-storage lalu tekan IZINKAN.\n" +
+                        "Atau manual: Setelan > Aplikasi > Termux > Izin > Penyimpanan/File dan media > Izinkan.\n" +
+                        "Setelah itu tekan \"Diagnosa Termux\" lagi.",
+                    isError = true
+                )
+                return@withContext ToolResult("error", message = "Termux belum punya izin penyimpanan.")
+            }
+            null -> appendLog("SYSTEM", "[4] INFO: Status izin penyimpanan Termux tidak terbaca — lanjut uji langsung.")
+        }
+
+        // 5. Kirim probe: Termux harus menjalankan perintah DAN menulis balik file.
         val probeFile = File(ipcDir, "probe_${System.currentTimeMillis()}.ok")
         val probeCmd = "echo ANDRA_PROBE_OK > '${probeFile.absolutePath}' 2>/dev/null || " +
             "echo ANDRA_PROBE_OK > '${probeFile.absolutePath.replace("/storage/emulated/0", "/sdcard")}' 2>/dev/null"
-        appendLog("SYSTEM", "[4] Mengirim perintah uji ke Termux (tunggu maks 12 detik)...")
+        appendLog("SYSTEM", "[5] Mengirim perintah uji ke Termux (tunggu maks 12 detik)...")
         val sent = AdbShizukuManager.sendTermuxRunCommandIntent(
             context = ctx,
             executablePath = "/data/data/com.termux/files/usr/bin/bash",
             arguments = arrayOf("-c", probeCmd)
         )
         if (!sent) {
-            appendLog("SYSTEM", "[4] GAGAL mengirim intent ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "ditolak sistem"}. Buka Termux sekali, biarkan di recent apps, lalu coba lagi.", isError = true)
+            appendLog("SYSTEM", "[5] GAGAL mengirim intent ke Termux: ${AdbShizukuManager.lastTermuxIntentError ?: "ditolak sistem"}. Buka Termux sekali, biarkan di recent apps, lalu coba lagi.", isError = true)
             return@withContext ToolResult("error", message = "Intent RUN_COMMAND gagal dikirim.")
         }
         val deadline = System.currentTimeMillis() + 12_000L
@@ -831,13 +860,13 @@ esac
         runCatching { probeFile.delete() }
 
         if (probeOk) {
-            appendLog("SYSTEM", "[4] OK: Termux merespons dan bisa menulis file. KONEKSI SEHAT ✓ — silakan mulai setup VM.")
+            appendLog("SYSTEM", "[5] OK: Termux merespons dan bisa menulis file. KONEKSI SEHAT ✓ — silakan mulai setup VM.")
             return@withContext ToolResult("ok", result = "Koneksi Termux sehat.")
         }
 
         appendLog(
             "SYSTEM",
-            "[4] GAGAL: Termux tidak merespons / tidak bisa menulis balik. Perbaiki berurutan:\n" +
+            "[5] GAGAL: Termux tidak merespons / tidak bisa menulis balik. Perbaiki berurutan:\n" +
                 "a. Buka Termux, jalankan: termux-setup-storage — lalu IZINKAN akses penyimpanan (ini yang paling sering terlewat).\n" +
                 "b. Pastikan sudah pernah: echo 'allow-external-apps=true' >> ~/.termux/termux.properties && termux-reload-settings\n" +
                 "c. HP Xiaomi/Redmi/POCO: Setelan > Aplikasi > Termux > aktifkan \"Mulai otomatis\" (Autostart) dan set Baterai ke \"Tanpa batasan\".\n" +
