@@ -664,6 +664,15 @@ private fun VmOfflineOrProvisioningBody(
                 color = JarvisTextSecondary,
                 fontSize = 12.sp
             )
+            Spacer(modifier = Modifier.height(14.dp))
+            OutlinedButton(
+                onClick = { VirtualComputerManager.cancelProvisioningAsync() },
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, JarvisRed.copy(alpha = 0.5f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = JarvisRed)
+            ) {
+                Text("Batalkan Setup", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+            }
         } else {
             Icon(
                 imageVector = Icons.Default.Computer,
@@ -1136,10 +1145,40 @@ fun VirtualComputerControlCard(
                     ) {
                         Text("Hentikan", fontSize = 12.5.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
+                } else if (status.state == VmState.PROVISIONING) {
+                    Button(
+                        onClick = { VirtualComputerManager.cancelProvisioningAsync() },
+                        modifier = Modifier
+                            .weight(1.3f)
+                            .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = JarvisRed.copy(alpha = 0.16f),
+                            contentColor = JarvisRed
+                        ),
+                        elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp)
+                    ) {
+                        Text(
+                            text = "Batalkan Setup",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = onOpenViewer,
+                        modifier = Modifier
+                            .weight(0.9f)
+                            .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, JarvisBorderStrong),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = JarvisTextPrimary)
+                    ) {
+                        Text("Log & Layar", fontSize = 12.5.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    }
                 } else {
                     Button(
                         onClick = { VirtualComputerManager.startOrProvisionVmAsync(context) },
-                        enabled = status.state != VmState.PROVISIONING,
                         modifier = Modifier
                             .weight(1.3f)
                             .heightIn(min = 44.dp),
@@ -1151,7 +1190,7 @@ fun VirtualComputerControlCard(
                         elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp)
                     ) {
                         Text(
-                            text = if (status.state == VmState.PROVISIONING) "Menyiapkan..." else "Mulai VM",
+                            text = "Mulai VM",
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1
@@ -1171,7 +1210,7 @@ fun VirtualComputerControlCard(
                 }
             }
 
-            if (status.isApproved && status.state != VmState.PROVISIONING) {
+            if (status.isApproved) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
@@ -1206,7 +1245,11 @@ fun VirtualComputerControlCard(
             },
             text = {
                 Text(
-                    text = "Seluruh sistem ${status.distro.displayName} dan file di dalam container VM akan dihapus untuk membebaskan ruang penyimpanan. File di /sdcard tidak terpengaruh.",
+                    text = if (status.state == VmState.PROVISIONING) {
+                        "Setup yang sedang berjalan akan DIBATALKAN terlebih dahulu, lalu seluruh sistem ${status.distro.displayName} (termasuk rootfs parsial) dihapus. File di /sdcard tidak terpengaruh."
+                    } else {
+                        "Seluruh sistem ${status.distro.displayName} dan file di dalam container VM akan dihapus untuk membebaskan ruang penyimpanan. File di /sdcard tidak terpengaruh."
+                    },
                     color = JarvisTextSecondary,
                     fontSize = 12.5.sp,
                     lineHeight = 18.sp
