@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.jarviscompanion.kzaq"
     minSdk = 26
     targetSdk = 36
-    versionCode = 67
-    versionName = "2.65"
+    versionCode = 68
+    versionName = "2.66"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

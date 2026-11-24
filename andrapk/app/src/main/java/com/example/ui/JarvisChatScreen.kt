@@ -716,11 +716,7 @@ private fun ChatVmInlineSection(
         VmActiveStatusBar(
             status = vmStatus,
             onOpenViewer = onOpenViewer,
-            onStop = {
-                coroutineScope.launch(Dispatchers.IO) {
-                    com.example.service.VirtualComputerManager.stopVm()
-                }
-            }
+            onStop = { com.example.service.VirtualComputerManager.stopVmAsync() }
         )
     }
 }
