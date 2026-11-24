@@ -133,6 +133,10 @@ object VirtualComputerManager {
     /** Mencegah dua proses provisioning berjalan bersamaan (setup ganda merusak rootfs). */
     private val provisioningMutex = Mutex()
 
+    /** Diset true saat pengguna menekan "Batalkan Setup"; dibaca loop polling setup. */
+    @Volatile
+    private var cancelRequested = false
+
     private val _status = MutableStateFlow(VmStatus())
     val status: StateFlow<VmStatus> = _status.asStateFlow()
 
@@ -592,7 +596,8 @@ esac
         distro: VmDistro = _status.value.distro,
         args: List<String> = emptyList(),
         timeoutMs: Long = 60_000L,
-        onPartialOutput: ((String) -> Unit)? = null
+        onPartialOutput: ((String) -> Unit)? = null,
+        cancellable: Boolean = false
     ): Pair<Int, String> = withContext(Dispatchers.IO) {
         val ctx = JarvisApp.instance
         if (!AdbShizukuManager.isTermuxInstalled(ctx)) {
@@ -636,6 +641,15 @@ esac
         var lastProgressCheck = 0L
         var readOffset = 0L
         while (System.currentTimeMillis() < deadline) {
+            // Pengguna menekan "Batalkan Setup": kirim sinyal kill ke proses di sisi
+            // Termux (unduhan/instalasi benar-benar berhenti, tidak lanjut di background),
+            // bersihkan file IPC, lalu kembalikan kode khusus -3.
+            if (cancellable && cancelRequested) {
+                sendVmKillSignal(ctx)
+                delay(600)
+                runCatching { outFile.delete(); rcFile.delete(); doneFile.delete() }
+                return@withContext Pair(-3, "Dibatalkan oleh pengguna.")
+            }
             if (doneFile.exists()) {
                 delay(120)
                 val out = runCatching { outFile.readText() }.getOrDefault("").trim()
@@ -681,6 +695,51 @@ esac
             "Perintah masih berjalan / timeout (${timeoutMs / 1000}d).\nOutput terakhir:\n$partial"
         }
         Pair(-2, hint)
+    }
+
+    /**
+     * Mematikan paksa seluruh proses setup/VM di sisi Termux: script kontrol,
+     * proot-distro, proot, serta unduhan curl/wget yang sedang berjalan.
+     * Dipakai saat pengguna membatalkan setup agar unduhan ratusan MB tidak
+     * terus berjalan diam-diam di background.
+     */
+    private fun sendVmKillSignal(ctx: Context = JarvisApp.instance) {
+        val killCmd = listOf(
+            "pkill -9 -f 'andra_vm.sh' 2>/dev/null",
+            "pkill -9 -f 'proot-distro' 2>/dev/null",
+            "pkill -9 -f '/bin/proot' 2>/dev/null",
+            "pkill -9 -x proot 2>/dev/null",
+            "pkill -9 -x curl 2>/dev/null",
+            "pkill -9 -x wget 2>/dev/null",
+            "true"
+        ).joinToString("; ")
+        runCatching {
+            AdbShizukuManager.sendTermuxRunCommandIntent(
+                context = ctx,
+                executablePath = "/data/data/com.termux/files/usr/bin/bash",
+                arguments = arrayOf("-c", killCmd)
+            )
+        }.onFailure { Log.w(TAG, "Gagal mengirim sinyal kill ke Termux: ${it.message}") }
+    }
+
+    /** Fire-and-forget untuk tombol "Batalkan Setup" di UI. */
+    fun cancelProvisioningAsync() {
+        scope.launch { cancelProvisioning() }
+    }
+
+    /**
+     * Membatalkan proses setup yang sedang berjalan. Loop polling di
+     * invokeTermuxVmScript mendeteksi flag ini (≤250 ms), mengirim kill ke Termux,
+     * lalu startOrProvisionVm menutup status dengan rapi (mutex dilepas via finally).
+     */
+    suspend fun cancelProvisioning(): ToolResult = withContext(Dispatchers.IO) {
+        if (_status.value.state != VmState.PROVISIONING) {
+            return@withContext ToolResult("error", message = "Tidak ada proses setup yang sedang berjalan.")
+        }
+        cancelRequested = true
+        _status.value = _status.value.copy(statusDetail = "Membatalkan setup...")
+        appendLog("SYSTEM", "Membatalkan setup atas permintaan pengguna...")
+        ToolResult("ok", result = "Permintaan pembatalan setup dikirim.")
     }
 
     private fun isNoVncReachable(port: Int = _status.value.novncPort): Boolean {
@@ -844,6 +903,7 @@ esac
                 message = "Penyiapan Komputer Virtual sedang berjalan. Tunggu hingga selesai — progres live tampil di tab Terminal VM."
             )
         }
+        cancelRequested = false
         try {
 
         if (!AdbShizukuManager.isTermuxInstalled(context)) {
@@ -883,8 +943,18 @@ esac
                 distro = distro,
                 args = listOf(mode.id, if (includeBrowser) "1" else "0", extraPackages.joinToString(" ")),
                 timeoutMs = 1_200_000L,
-                onPartialOutput = makeLiveLogStreamer()
+                onPartialOutput = makeLiveLogStreamer(),
+                cancellable = true
             )
+            if (setupRc == -3) {
+                _status.value = _status.value.copy(
+                    state = VmState.STOPPED,
+                    statusDetail = "Setup dibatalkan",
+                    lastError = null
+                )
+                appendLog("SYSTEM", "Setup dibatalkan. Rootfs parsial bisa dihapus lewat tombol \"Hapus Rootfs VM\" sebelum memulai ulang.")
+                return@withContext ToolResult("ok", result = "Setup Komputer Virtual dibatalkan oleh pengguna.")
+            }
             if (setupRc != 0 && setupOut.isNotBlank()) appendLog("VM", setupOut.takeLast(1200), isError = true)
             if (setupRc != 0) {
                 val err = "Gagal menyiapkan ${distro.displayName}: ${setupOut.takeLast(400)}"
@@ -893,6 +963,13 @@ esac
             }
         } else {
             appendLog("SYSTEM", "Rootfs ${distro.displayName} sudah terpasang, melanjutkan boot...")
+        }
+
+        // Pengguna sempat menekan Batalkan tepat sebelum fase boot — hormati.
+        if (cancelRequested) {
+            _status.value = _status.value.copy(state = VmState.STOPPED, statusDetail = "Setup dibatalkan", lastError = null)
+            appendLog("SYSTEM", "Setup dibatalkan sebelum fase boot.")
+            return@withContext ToolResult("ok", result = "Setup Komputer Virtual dibatalkan oleh pengguna.")
         }
 
         // 2. Start VM (Xvnc + Openbox + noVNC jika mode GUI)
@@ -964,6 +1041,22 @@ esac
 
     suspend fun destroyVm(): ToolResult = withContext(Dispatchers.IO) {
         ensurePrefsLoaded()
+
+        // Jika setup masih berjalan: batalkan dulu, lalu tunggu loop setup selesai
+        // melepas mutex (maks ~20 dtk) supaya destroy tidak balapan dengan installer.
+        if (_status.value.state == VmState.PROVISIONING) {
+            cancelRequested = true
+            _status.value = _status.value.copy(statusDetail = "Membatalkan setup sebelum menghapus...")
+            appendLog("SYSTEM", "Setup sedang berjalan — dibatalkan dulu sebelum rootfs dihapus.")
+            val waitUntil = System.currentTimeMillis() + 20_000L
+            while (provisioningMutex.isLocked && System.currentTimeMillis() < waitUntil) {
+                delay(300)
+            }
+            // Pastikan tidak ada proses installer tersisa sebelum menghapus rootfs.
+            sendVmKillSignal()
+            delay(800)
+        }
+
         val current = _status.value
         appendLog("SYSTEM", "Menghapus rootfs ${current.distro.displayName}...")
         val (rc, out) = invokeTermuxVmScript("destroy", current.distro, timeoutMs = 60_000L)
