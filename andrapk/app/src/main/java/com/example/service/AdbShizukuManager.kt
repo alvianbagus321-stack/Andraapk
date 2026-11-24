@@ -744,8 +744,8 @@ object AdbShizukuManager {
     /**
      * Sends execution request directly to Termux via Intent broadcast
      */
-    fun sendTermuxRunCommandIntent(context: Context, executablePath: String, arguments: Array<String> = emptyArray()) {
-        try {
+    fun sendTermuxRunCommandIntent(context: Context, executablePath: String, arguments: Array<String> = emptyArray()): Boolean {
+        return try {
             val intent = Intent().apply {
                 setClassName(TERMUX_PACKAGE, "com.termux.app.RunCommandService")
                 action = "com.termux.RUN_COMMAND"
@@ -755,8 +755,16 @@ object AdbShizukuManager {
                 putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
             }
             context.startService(intent)
+            true
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send Termux RUN_COMMAND intent: ${e.message}")
+            lastTermuxIntentError = "${e.javaClass.simpleName}: ${e.message}"
+            false
         }
     }
+
+    /** Pesan error terakhir saat gagal mengirim intent RUN_COMMAND ke Termux (untuk diagnosa). */
+    @Volatile
+    var lastTermuxIntentError: String? = null
+        private set
 }
