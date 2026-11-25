@@ -2,7 +2,6 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,25 +26,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.theme.GlassElevatedTint
+import com.example.ui.theme.GlassRadius
+import com.example.ui.theme.GlassSurfaceTint
 import com.example.ui.theme.JarvisAmber
 import com.example.ui.theme.JarvisBorder
-import com.example.ui.theme.ambientDepth
-import com.example.ui.theme.specularGlass
-import com.example.ui.theme.JarvisBorderStrong
 import com.example.ui.theme.JarvisCyan
 import com.example.ui.theme.JarvisEmerald
-import com.example.ui.theme.JarvisSurface
-import com.example.ui.theme.JarvisSurfaceElevated
 import com.example.ui.theme.JarvisSurfaceVariant
 import com.example.ui.theme.JarvisTextPrimary
 import com.example.ui.theme.JarvisTextSecondary
+import com.example.ui.theme.ambientDepth
+import com.example.ui.theme.specularGlass
 
 /**
  * Komponen bersama Liquid Glass — tenang, presisi, dan ringan di GPU (60fps).
@@ -69,29 +67,35 @@ fun AuroraBackdrop(
 }
 
 /**
- * Kartu kaca spekular Tier-2: isian translusen, rim gradien terarah, sheen atas.
- * Seluruh efek digambar via drawWithCache — nol alokasi per frame.
+ * Kartu kaca spekular Tier-2: isian kaca gelap translusen agar kedalaman obsidian
+ * tetap terasa, dipadukan rim gradien terarah dan sheen atas via drawWithCache
+ * (nol biaya blur, nol alokasi per frame).
  */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
-    containerColor: Color = JarvisSurface,
-    cornerRadius: Dp = 14.dp,
+    containerColor: Color = GlassSurfaceTint,
+    cornerRadius: Dp = GlassRadius.Card,
     accentBrush: Brush? = null,
+    active: Boolean = false,
     content: @Composable () -> Unit
 ) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(cornerRadius))
             .background(containerColor)
-            .specularGlass(cornerRadius = cornerRadius, rimBrush = accentBrush)
+            .specularGlass(
+                cornerRadius = cornerRadius,
+                active = active,
+                rimBrush = accentBrush
+            )
     ) {
         content()
     }
 }
 
 /**
- * Header bagian yang bersih dengan hierarki tipografi natural (tanpa kapital berlebih).
+ * Header bagian yang bersih dengan hierarki tipografi natural (Sentence case).
  */
 @Composable
 fun SectionHeader(
@@ -143,14 +147,14 @@ fun StatusPill(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(999.dp),
-        color = if (active) activeColor.copy(alpha = 0.12f) else JarvisSurfaceVariant,
+        color = if (active) activeColor.copy(alpha = 0.14f) else JarvisSurfaceVariant.copy(alpha = 0.72f),
         border = BorderStroke(
-            1.dp,
-            if (active) activeColor.copy(alpha = 0.35f) else JarvisBorder
+            0.85.dp,
+            if (active) activeColor.copy(alpha = 0.36f) else JarvisBorder
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
@@ -163,7 +167,7 @@ fun StatusPill(
             Text(
                 text = text,
                 color = if (active) activeColor else JarvisTextSecondary,
-                fontSize = 10.sp,
+                fontSize = 10.5.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 0.1.sp,
                 maxLines = 1
@@ -192,21 +196,21 @@ fun StatusDot(
 }
 
 /**
- * Ikon identitas aplikasi: kotak bersudut presisi bergaya utilitas profesional.
+ * Ikon identitas aplikasi bergaya Liquid Glass presisi.
  */
 @Composable
 fun AppLogoMark(
     modifier: Modifier = Modifier,
-    size: Dp = 34.dp,
+    size: Dp = 36.dp,
     iconSize: Dp = 18.dp
 ) {
-    val radius = (size.value * 0.28f).dp
+    val radius = (size.value * 0.34f).dp
     Box(
         modifier = modifier
             .size(size)
             .clip(RoundedCornerShape(radius))
-            .background(JarvisSurfaceElevated)
-            .border(1.dp, JarvisBorderStrong, RoundedCornerShape(radius)),
+            .background(GlassElevatedTint)
+            .specularGlass(cornerRadius = radius, fillAlpha = 0.08f, active = true),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -219,7 +223,7 @@ fun AppLogoMark(
 }
 
 /**
- * Kartu metrik ringkas untuk telemetri sistem (baterai, jaringan, aplikasi aktif).
+ * Kartu metrik ringkas dengan rim spekular Liquid Glass.
  */
 @Composable
 fun MetricTile(
@@ -232,15 +236,14 @@ fun MetricTile(
 ) {
     GlassCard(
         modifier = modifier,
-        cornerRadius = 12.dp,
-        accentBrush = SolidColor(JarvisBorder)
+        cornerRadius = GlassRadius.Card
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = JarvisTextSecondary,
+                    tint = accent.copy(alpha = 0.85f),
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))

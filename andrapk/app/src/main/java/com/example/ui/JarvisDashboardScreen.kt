@@ -100,7 +100,7 @@ fun JarvisDashboardScreen(
     var showMcpHelpDialog by remember { mutableStateOf(false) }
     var selectedLog by remember { mutableStateOf<ServerLogItem?>(null) }
 
-    val logs by viewModel.serverLogs.collectAsState()
+    val logs by viewModel.serverLogs.collectAsStateWithLifecycle()
 
     val onOpenAiConfig = remember {
         { freeTab: Boolean, presetId: String? ->
@@ -118,7 +118,7 @@ fun JarvisDashboardScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(top = 14.dp, bottom = 96.dp)
+        contentPadding = PaddingValues(top = 14.dp, bottom = GlassSpacing.FloatingNavClearance)
     ) {
         item(key = "floating_window", contentType = "card") {
             DashboardFloatingWindowCard(viewModel = viewModel)
@@ -1425,7 +1425,7 @@ private fun DashboardMcpCard(
                         },
                         modifier = Modifier.weight(1f),
                         enabled = !isTunnelStarting,
-                        colors = ButtonDefaults.buttonColors(containerColor = AuroraViolet, contentColor = Color(0xFF231433)),
+                        colors = ButtonDefaults.buttonColors(containerColor = AuroraViolet, contentColor = JarvisOnPrimary),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                         shape = RoundedCornerShape(8.dp)
                     ) {

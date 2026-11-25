@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 /**
  * Data model representing an interactive or visible UI element inspected from the screen.
  */
+@Immutable
 data class UiElementInfo(
     val id: String,
     val text: String,
@@ -18,6 +19,7 @@ data class UiElementInfo(
     val packageName: String
 )
 
+@Immutable
 data class RectBounds(
     val left: Int,
     val top: Int,
@@ -135,6 +137,7 @@ enum class ToolRiskLevel {
     HIGH
 }
 
+@Immutable
 data class CustomTool(
     val id: String,
     val name: String,
@@ -157,6 +160,7 @@ enum class AiPermissionMode {
     CUSTOM
 }
 
+@Immutable
 data class CustomPermissionSettings(
     val allowReadScreen: Boolean = true,
     val allowTapSwipe: Boolean = true,

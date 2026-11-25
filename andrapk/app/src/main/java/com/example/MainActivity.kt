@@ -14,13 +14,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -38,6 +39,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -47,7 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.example.service.JarvisCompanionService
+import com.example.ui.CodePreviewPayload
+import com.example.ui.HtmlPreviewOverlay
 import com.example.ui.JarvisChatScreen
 import com.example.ui.JarvisDashboardScreen
 import com.example.ui.JarvisSandboxScreen
@@ -58,6 +63,8 @@ import com.example.ui.components.AppLogoMark
 import com.example.ui.components.AuroraBackdrop
 import com.example.ui.components.StatusPill
 import com.example.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -95,7 +102,7 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.parseColor("#13161B"))
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
 
         if (intent?.getBooleanExtra("auto_request_projection", false) == true) {
@@ -147,7 +154,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun JarvisMainApp(
     viewModel: JarvisViewModel,
@@ -156,6 +163,8 @@ fun JarvisMainApp(
     var selectedTab by remember { mutableIntStateOf(0) }
     val visitedTabs = remember { mutableStateListOf(0) }
     val focusManager = LocalFocusManager.current
+    val imeState = rememberReliableImeState()
+    var activeCodePreview by remember { mutableStateOf<CodePreviewPayload?>(null) }
 
     val navItems = remember {
         listOf(
@@ -169,64 +178,95 @@ fun JarvisMainApp(
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        containerColor = JarvisBackground,
-        topBar = {
-            JarvisTopBar(viewModel = viewModel)
-        },
-        bottomBar = {
-            Column(modifier = Modifier.background(JarvisSurface)) {
-                HorizontalDivider(thickness = 1.dp, color = Color.White.copy(alpha = 0.08f))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    navItems.forEach { (tag, iconAndLabel, index) ->
-                        val (icon, label) = iconAndLabel
-                        GlassNavItem(
-                            icon = icon,
-                            label = label,
-                            selected = selectedTab == index,
-                            onClick = {
-                                if (selectedTab != index) {
-                                    focusManager.clearFocus()
-                                    if (index !in visitedTabs) {
-                                        visitedTabs.add(index)
+        containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+    ) { _ ->
+        AuroraBackdrop {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    FloatingGlassTopBar(viewModel = viewModel)
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        ActiveTabHost(
+                            visitedTabs = visitedTabs,
+                            selectedTab = selectedTab
+                        ) { tabIndex ->
+                            when (tabIndex) {
+                                0 -> JarvisDashboardScreen(
+                                    viewModel = viewModel,
+                                    onRequestMediaProjection = onRequestMediaProjection
+                                )
+                                1 -> JarvisSandboxScreen(viewModel = viewModel)
+                                2 -> JarvisTermuxScreen(viewModel = viewModel)
+                                3 -> JarvisChatScreen(
+                                    viewModel = viewModel,
+                                    imeState = imeState,
+                                    onOpenExternalPreview = { payload ->
+                                        focusManager.clearFocus()
+                                        activeCodePreview = payload
                                     }
-                                    selectedTab = index
-                                }
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag(tag)
-                        )
+                                )
+                                4 -> JarvisToolsScreen()
+                            }
+                        }
                     }
                 }
-            }
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            AuroraBackdrop {
-                ActiveTabHost(
-                    visitedTabs = visitedTabs,
-                    selectedTab = selectedTab
-                ) { tabIndex ->
-                    when (tabIndex) {
-                        0 -> JarvisDashboardScreen(
-                            viewModel = viewModel,
-                            onRequestMediaProjection = onRequestMediaProjection
-                        )
-                        1 -> JarvisSandboxScreen(viewModel = viewModel)
-                        2 -> JarvisTermuxScreen(viewModel = viewModel)
-                        3 -> JarvisChatScreen(viewModel = viewModel)
-                        4 -> JarvisToolsScreen()
+
+                // Tier-1 Floating Pill Bottom Navigation Bar — otomatis sembunyi saat keyboard atau Mode Preview terbuka
+                AnimatedVisibility(
+                    visible = !imeState.isVisible && activeCodePreview == null,
+                    enter = fadeIn(tween(160)) + slideInVertically(tween(200)) { it / 2 },
+                    exit = fadeOut(tween(110)) + slideOutVertically(tween(150)) { it / 2 },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(GlassRadius.Pill))
+                            .floatingGlassChrome(cornerRadius = GlassRadius.Pill)
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        navItems.forEach { (tag, iconAndLabel, index) ->
+                            val (icon, label) = iconAndLabel
+                            GlassNavItem(
+                                icon = icon,
+                                label = label,
+                                selected = selectedTab == index,
+                                onClick = {
+                                    if (selectedTab != index) {
+                                        focusManager.clearFocus()
+                                        if (index !in visitedTabs) {
+                                            visitedTabs.add(index)
+                                        }
+                                        selectedTab = index
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag(tag)
+                            )
+                        }
                     }
+                }
+
+                // Mode Preview HTML/SVG layar penuh di dalam Activity Window (bebas bug Dialog+WebView)
+                activeCodePreview?.let { payload ->
+                    HtmlPreviewOverlay(
+                        htmlCode = payload.code,
+                        fileName = payload.fileName,
+                        language = payload.language,
+                        onFileNameChange = payload.onFileNameChange,
+                        onDismiss = { activeCodePreview = null }
+                    )
                 }
             }
         }
@@ -234,12 +274,14 @@ fun JarvisMainApp(
 }
 
 /**
- * Item navigasi kaca: feedback sentuh 0.97f (spring taktil) + indikator seleksi
- * yang dianimasikan murni di fase draw (graphicsLayer/drawBehind — tanpa layout pass).
+ * Item navigasi kaca pada Floating Pill Bottom Bar:
+ * - Touch target >= 48dp
+ * - Feedback sentuh 0.97f (TactileSpring) di fase draw (graphicsLayer)
+ * - Indikator pil aktif di fase draw (drawBehind — nol layout pass).
  */
 @Composable
 private fun GlassNavItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
@@ -249,18 +291,22 @@ private fun GlassNavItem(
     val pressScale = rememberPressScale(interaction)
     val selectionFraction = animateFloatAsState(
         targetValue = if (selected) 1f else 0f,
-        animationSpec = LayoutSpring,
+        animationSpec = FluidSpring,
         label = "nav_selection"
     )
     val tint by animateColorAsState(
         targetValue = if (selected) JarvisTextPrimary else JarvisTextSecondary,
         label = "nav_tint"
     )
+    val iconTint by animateColorAsState(
+        targetValue = if (selected) JarvisCyan else JarvisTextSecondary,
+        label = "nav_icon_tint"
+    )
 
     Column(
         modifier = modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .heightIn(min = 50.dp)
+            .clip(RoundedCornerShape(GlassRadius.Card))
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -274,19 +320,19 @@ private fun GlassNavItem(
                 val fraction = selectionFraction.value
                 if (fraction > 0.01f) {
                     drawRoundRect(
-                        color = Color.White.copy(alpha = 0.09f * fraction),
-                        cornerRadius = CornerRadius(14.dp.toPx())
+                        color = JarvisCyan.copy(alpha = 0.16f * fraction),
+                        cornerRadius = CornerRadius(GlassRadius.Card.toPx())
                     )
                 }
             }
-            .padding(vertical = 7.dp),
+            .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = tint,
+            tint = iconTint,
             modifier = Modifier.size(20.dp)
         )
         Spacer(modifier = Modifier.height(3.dp))
@@ -295,7 +341,8 @@ private fun GlassNavItem(
             color = tint,
             fontSize = 10.5.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -303,8 +350,9 @@ private fun GlassNavItem(
 /**
  * Custom Layout untuk perpindahan tab instan (0ms stutter):
  * - Tab baru baru di-compose saat pertama kali dikunjungi (startup tetap ringan).
- * - Tab yang sudah dikunjungi tetap menjaga scroll position & remember cache,
- *   tetapi hanya tab aktif yang di-measure dan di-place (0 biaya GPU/layout utk tab pasif).
+ * - Tab yang sudah dikunjungi menjaga scroll position & remember cache,
+ *   tetapi hanya tab aktif yang di-measure dan di-place.
+ * - Transisi tab: fade + scale 0.985 -> 1f (180ms) murni di fase draw.
  */
 @Composable
 private fun ActiveTabHost(
@@ -317,11 +365,10 @@ private fun ActiveTabHost(
         content = {
             visitedTabs.forEach { tab ->
                 key(tab) {
-                    // Transisi tab: fade + skala 0.985→1 (180ms) murni di fase draw.
                     val isActive = tab == selectedTab
                     val fade = animateFloatAsState(
                         targetValue = if (isActive) 1f else 0f,
-                        animationSpec = tween(durationMillis = 180),
+                        animationSpec = tween(durationMillis = TabTransitionDurationMs),
                         label = "tab_fade"
                     )
                     Box(
@@ -348,70 +395,80 @@ private fun ActiveTabHost(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Tier-1 Compact Floating Glass Top Bar: satu baris ringkas mengambang di bawah status bar.
+ */
 @Composable
-private fun JarvisTopBar(viewModel: JarvisViewModel) {
+private fun FloatingGlassTopBar(viewModel: JarvisViewModel) {
     val isServerRunning by viewModel.isServerRunning.collectAsStateWithLifecycle()
     val onToggleServer = remember(viewModel) { { _: Boolean -> viewModel.toggleServer() } }
-    Column {
-        TopAppBar(
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AppLogoMark(size = 34.dp, iconSize = 18.dp)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Andra Control",
-                            color = JarvisTextPrimary,
-                            fontSize = 15.5.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            letterSpacing = (-0.2).sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "Otomasi & Asisten Perangkat",
-                            color = JarvisTextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Normal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            },
-            actions = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(end = 12.dp)
-                ) {
-                    StatusPill(
-                        text = if (isServerRunning) "Online" else "Offline",
-                        active = isServerRunning
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(GlassRadius.Card))
+                .floatingGlassChrome(cornerRadius = GlassRadius.Card)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                AppLogoMark(size = 34.dp, iconSize = 18.dp)
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Andra Control",
+                        color = JarvisTextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Switch(
-                        checked = isServerRunning,
-                        onCheckedChange = onToggleServer,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = JarvisEmerald,
-                            checkedBorderColor = Color.Transparent,
-                            uncheckedThumbColor = JarvisTextSecondary,
-                            uncheckedTrackColor = JarvisSurfaceVariant,
-                            uncheckedBorderColor = JarvisBorderStrong
-                        ),
-                        modifier = Modifier
-                            .scale(0.84f)
-                            .testTag("server_toggle_switch")
+                    Text(
+                        text = "Otomasi & asisten perangkat",
+                        color = JarvisTextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = JarvisBackground,
-                titleContentColor = JarvisTextPrimary
-            )
-        )
-        HorizontalDivider(thickness = 1.dp, color = JarvisBorder)
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                StatusPill(
+                    text = if (isServerRunning) "Online" else "Offline",
+                    active = isServerRunning
+                )
+                Switch(
+                    checked = isServerRunning,
+                    onCheckedChange = onToggleServer,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = JarvisCyan,
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedThumbColor = JarvisTextSecondary,
+                        uncheckedTrackColor = JarvisSurfaceVariant,
+                        uncheckedBorderColor = JarvisBorderStrong
+                    ),
+                    modifier = Modifier
+                        .scale(0.84f)
+                        .testTag("server_toggle_switch")
+                )
+            }
+        }
     }
 }

@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,9 +27,14 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.*
@@ -56,6 +62,113 @@ data class CodePreviewPayload(
     val language: String = "html",
     val onFileNameChange: ((String) -> Unit)? = null
 )
+
+/**
+ * Formatter Markdown ringan (O(1) fast-path untuk teks biasa) agar bubble chat
+ * merender **bold**, *italic*, `inline code`, heading, dan bullet list dengan rapi
+ * tanpa pernah menampilkan token mentah ** atau tag <thought> internal.
+ */
+object ChatMarkdownFormatter {
+    private val THOUGHT_BLOCK_REGEX = Regex("<thought>[\\s\\S]*?</thought>", RegexOption.IGNORE_CASE)
+    private val HEADING_REGEX = Regex("^#{1,4}\\s+(.+)$")
+    private val BULLET_REGEX = Regex("^(\\s*)[-*]\\s+(.+)$")
+    private val INLINE_TOKEN_REGEX = Regex("(`[^`\\n]+`|\\*\\*[^*\\n]+\\*\\*|(?<!\\*)\\*[^*\\n]+\\*(?!\\*))")
+
+    fun format(rawText: String): AnnotatedString {
+        if (rawText.isEmpty()) return AnnotatedString("")
+
+        val cleaned = if (rawText.contains("<thought", ignoreCase = true)) {
+            THOUGHT_BLOCK_REGEX.replace(rawText, "").trim()
+        } else {
+            rawText
+        }
+        if (cleaned.isEmpty()) return AnnotatedString("")
+
+        val needsMarkdown = cleaned.contains('*') ||
+            cleaned.contains('`') ||
+            cleaned.contains('#') ||
+            cleaned.contains("\n- ") ||
+            cleaned.startsWith("- ")
+
+        if (!needsMarkdown) return AnnotatedString(cleaned)
+
+        val lines = cleaned.lines()
+        return buildAnnotatedString {
+            lines.forEachIndexed { idx, rawLine ->
+                if (idx > 0) append('\n')
+                val headingMatch = HEADING_REGEX.matchEntire(rawLine.trim())
+                if (headingMatch != null) {
+                    withStyle(
+                        SpanStyle(
+                            fontWeight = FontWeight.SemiBold,
+                            color = JarvisTextPrimary,
+                            fontSize = 14.5.sp
+                        )
+                    ) {
+                        appendInlineMarkdown(headingMatch.groupValues[1])
+                    }
+                } else {
+                    val bulletMatch = BULLET_REGEX.matchEntire(rawLine)
+                    if (bulletMatch != null) {
+                        val indent = bulletMatch.groupValues[1]
+                        append(indent)
+                        withStyle(SpanStyle(color = JarvisCyan, fontWeight = FontWeight.SemiBold)) {
+                            append("• ")
+                        }
+                        appendInlineMarkdown(bulletMatch.groupValues[2])
+                    } else {
+                        appendInlineMarkdown(rawLine)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun AnnotatedString.Builder.appendInlineMarkdown(line: String) {
+        var cursor = 0
+        for (match in INLINE_TOKEN_REGEX.findAll(line)) {
+            val start = match.range.first
+            if (start > cursor) {
+                append(line.substring(cursor, start))
+            }
+            val token = match.value
+            when {
+                token.startsWith("`") && token.endsWith("`") && token.length >= 2 -> {
+                    withStyle(
+                        SpanStyle(
+                            fontFamily = FontFamily.Monospace,
+                            color = JarvisCyan,
+                            background = GlassInlineCodeBg,
+                            fontSize = 12.sp
+                        )
+                    ) {
+                        append(" ${token.substring(1, token.length - 1)} ")
+                    }
+                }
+                token.startsWith("**") && token.endsWith("**") && token.length >= 4 -> {
+                    withStyle(
+                        SpanStyle(
+                            fontWeight = FontWeight.SemiBold,
+                            color = JarvisTextPrimary
+                        )
+                    ) {
+                        append(token.substring(2, token.length - 2))
+                    }
+                }
+                token.startsWith("*") && token.endsWith("*") && token.length >= 2 -> {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                        append(token.substring(1, token.length - 1))
+                    }
+                }
+                else -> append(token)
+            }
+            cursor = match.range.last + 1
+        }
+        if (cursor < line.length) {
+            append(line.substring(cursor))
+        }
+    }
+}
 
 /**
  * Parser berkinerja tinggi (O(1) fast-path untuk pesan teks biasa) yang memisahkan
@@ -227,18 +340,21 @@ object ChatMessageParser {
             return lang to (attrFileName ?: name.takeIf { it.isNotBlank() })
         }
 
+        // Pola ```html: landing.html (spasi setelah titik dua)
+        val cleanedFirstToken = firstToken.trimEnd(':', ',', ';')
+
         // Pola ```index.html (langsung nama file pada token pertama)
-        if (SAFE_FILE_TOKEN_REGEX.matches(firstToken)) {
-            val ext = firstToken.substringAfterLast('.', "")
-            return ext to (attrFileName ?: firstToken)
+        if (SAFE_FILE_TOKEN_REGEX.matches(cleanedFirstToken)) {
+            val ext = cleanedFirstToken.substringAfterLast('.', "")
+            return ext to (attrFileName ?: cleanedFirstToken)
         }
 
-        // Pola ```python script.py (token kedua berupa nama file)
+        // Pola ```python script.py atau ```html: landing.html (token kedua berupa nama file)
         val secondFileName = tokens.drop(1).firstOrNull { token ->
             !token.contains('=') && SAFE_FILE_TOKEN_REGEX.matches(token.trim('"', '\''))
         }?.trim('"', '\'')
 
-        return firstToken to (attrFileName ?: secondFileName)
+        return cleanedFirstToken to (attrFileName ?: secondFileName)
     }
 
     private fun extractFileNameFromFirstLine(code: String): String? {
@@ -248,10 +364,10 @@ object ChatMessageParser {
     }
 
     private fun normalizeLanguage(rawLang: String, fileName: String?, code: String): String {
-        val cleaned = rawLang.trim().lowercase(Locale.ROOT)
+        val cleaned = rawLang.trim().trimEnd(':', ',', ';').lowercase(Locale.ROOT)
         if (cleaned.isNotBlank()) {
             return when (cleaned) {
-                "htm" -> "html"
+                "htm", "html5", "xhtml" -> "html"
                 "py" -> "python"
                 "js" -> "javascript"
                 "ts" -> "typescript"
@@ -323,14 +439,14 @@ object ChatMessageParser {
     }
 
     fun isPreviewableCode(language: String, code: String): Boolean {
-        val lang = language.lowercase(Locale.ROOT)
-        if (lang == "html" || lang == "htm" || lang == "svg") return true
+        val lang = language.trim().trimEnd(':', ',', ';').lowercase(Locale.ROOT)
+        if (lang == "html" || lang == "htm" || lang == "html5" || lang == "xhtml" || lang == "svg") return true
+        if (code.contains("<!doctype", true) || code.contains("<html", true)) return true
         if (lang == "xml" && (code.contains("<svg", true) || code.contains("<html", true))) return true
-        if (lang == "code" || lang == "text" || lang == "txt") {
-            return code.contains("<!doctype", true) ||
-                code.contains("<html", true) ||
-                (code.contains("<svg", true) && code.contains("</svg>", true)) ||
-                (code.contains("<style", true) && code.contains("<div", true))
+        if (lang == "code" || lang == "text" || lang == "txt" || lang == "web") {
+            return (code.contains("<svg", true) && code.contains("</svg>", true)) ||
+                (code.contains("<style", true) && code.contains("<div", true)) ||
+                (code.contains("<body", true) && code.contains("</body>", true))
         }
         return false
     }
@@ -548,19 +664,20 @@ fun CodeBlockCard(
         segment.language.uppercase(Locale.ROOT).take(10)
     }
 
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
-        color = JarvisBackground,
-        border = BorderStroke(1.dp, JarvisBorderStrong)
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(GlassRadius.Card))
+            .background(GlassCodeCanvas)
+            .specularGlass(cornerRadius = GlassRadius.Card, fillAlpha = 0.04f)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Header bar: badge bahasa + nama file (editable) + Copy + Download
+            // Header bar: badge bahasa + nama file (editable) + Preview + Copy + Download
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(JarvisSurfaceVariant)
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                    .background(GlassCodeHeader)
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
@@ -612,18 +729,30 @@ fun CodeBlockCard(
 
                 Spacer(modifier = Modifier.width(4.dp))
 
+                // Tombol cepat Preview langsung di header untuk HTML/SVG
+                if (segment.isPreviewable) {
+                    IconButton(
+                        onClick = { onPreview(fileName) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Visibility,
+                            contentDescription = "Preview live",
+                            tint = JarvisCyan,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
                 // Tombol Salin Kode
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText(fileName, segment.code))
-                            copiedRecently = true
-                            Toast.makeText(context, "$fileName disalin", Toast.LENGTH_SHORT).show()
-                        },
-                    contentAlignment = Alignment.Center
+                IconButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText(fileName, segment.code))
+                        copiedRecently = true
+                        Toast.makeText(context, "$fileName disalin", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
                         imageVector = if (copiedRecently) Icons.Default.Check else Icons.Default.ContentCopy,
@@ -633,35 +762,32 @@ fun CodeBlockCard(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(2.dp))
-
                 // Tombol Unduh File Kode
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(enabled = !isSaving) {
-                            isSaving = true
-                            coroutineScope.launch {
-                                val result = CodeFileDownloader.saveCodeToDownloads(
-                                    context = context,
-                                    fileName = fileName,
-                                    code = segment.code,
-                                    language = segment.language
-                                )
-                                isSaving = false
-                                result.onSuccess { savedPath ->
-                                    Toast.makeText(context, "Tersimpan: $savedPath", Toast.LENGTH_SHORT).show()
-                                }.onFailure { err ->
-                                    Toast.makeText(
-                                        context,
-                                        "Gagal mengunduh: ${err.message ?: "Error"}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
+                IconButton(
+                    onClick = {
+                        if (isSaving) return@IconButton
+                        isSaving = true
+                        coroutineScope.launch {
+                            val result = CodeFileDownloader.saveCodeToDownloads(
+                                context = context,
+                                fileName = fileName,
+                                code = segment.code,
+                                language = segment.language
+                            )
+                            isSaving = false
+                            result.onSuccess { savedPath ->
+                                Toast.makeText(context, "Tersimpan: $savedPath", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                Toast.makeText(
+                                    context,
+                                    "Gagal mengunduh: ${err.message ?: "Error"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
-                        },
-                    contentAlignment = Alignment.Center
+                        }
+                    },
+                    enabled = !isSaving,
+                    modifier = Modifier.size(32.dp)
                 ) {
                     if (isSaving) {
                         CircularProgressIndicator(
@@ -716,7 +842,7 @@ fun CodeBlockCard(
                 ) {
                     Text(
                         text = displayedCode,
-                        color = Color(0xFFDCE4EE),
+                        color = GlassCodeText,
                         fontSize = 11.5.sp,
                         fontFamily = FontFamily.Monospace,
                         lineHeight = 16.5.sp,
@@ -727,72 +853,79 @@ fun CodeBlockCard(
 
             // Footer aksi: tombol Preview Live (untuk HTML/SVG) dan/atau Lihat Semua baris
             if (segment.isPreviewable || canCollapse) {
-                HorizontalDivider(color = JarvisBorder, thickness = 1.dp)
+                HorizontalDivider(color = GlassDivider, thickness = 1.dp)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(JarvisSurface)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .background(GlassCodeHeader)
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (canCollapse) {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { isExpanded = !isExpanded }
-                                .padding(horizontal = 4.dp, vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = JarvisTextSecondary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = if (isExpanded) "Ringkas kode" else "Lihat semua ($totalLines baris)",
-                                color = JarvisTextSecondary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    } else {
-                        Text(
-                            text = "$totalLines baris · Siap preview",
-                            color = JarvisTextTertiary,
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-
-                    if (segment.isPreviewable) {
-                        Surface(
-                            shape = RoundedCornerShape(7.dp),
-                            color = JarvisCyan,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(7.dp))
-                                .clickable { onPreview(fileName) }
-                        ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (canCollapse) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { isExpanded = !isExpanded }
+                                    .padding(horizontal = 4.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Visibility,
-                                    contentDescription = "Preview kode",
-                                    tint = JarvisOnPrimary,
-                                    modifier = Modifier.size(13.dp)
+                                    imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = JarvisTextSecondary,
+                                    modifier = Modifier.size(15.dp)
                                 )
-                                Spacer(modifier = Modifier.width(5.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
                                 Text(
-                                    text = "Preview",
-                                    color = JarvisOnPrimary,
+                                    text = if (isExpanded) "Ringkas kode" else "Lihat semua ($totalLines baris)",
+                                    color = JarvisTextSecondary,
                                     fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
+                        } else {
+                            Text(
+                                text = "$totalLines baris · Siap preview",
+                                color = JarvisTextTertiary,
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    if (segment.isPreviewable) {
+                        val previewInteraction = remember { MutableInteractionSource() }
+                        Button(
+                            onClick = { onPreview(fileName) },
+                            interactionSource = previewInteraction,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = JarvisCyan,
+                                contentColor = JarvisOnPrimary
+                            ),
+                            shape = RoundedCornerShape(GlassRadius.Small),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp),
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .pressScale(previewInteraction)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Visibility,
+                                contentDescription = "Preview kode",
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Preview",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
                         }
                     }
                 }

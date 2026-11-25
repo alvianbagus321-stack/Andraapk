@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.termux.TermuxScripts
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -35,8 +36,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
     val context = LocalContext.current
-    val port by viewModel.port.collectAsState()
-    val token by viewModel.token.collectAsState()
+    val port by viewModel.port.collectAsStateWithLifecycle()
+    val token by viewModel.token.collectAsStateWithLifecycle()
 
     var selectedScriptTab by remember { mutableIntStateOf(0) }
     val scriptTitles = listOf(
@@ -76,7 +77,7 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
             .fillMaxSize()
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
-        contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp)
+        contentPadding = PaddingValues(top = 16.dp, bottom = GlassSpacing.FloatingNavClearance)
     ) {
         // AI Virtual Computer (Termux proot-distro + Live noVNC Viewer)
         item {
@@ -100,8 +101,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("termux_service_controller_card"),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = androidx.compose.foundation.BorderStroke(1.dp, JarvisBorder)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -251,8 +252,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("termux_quick_setup_card"),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(JarvisCyan.copy(alpha = 0.5f)))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -317,8 +318,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { expanded = !expanded },
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(JarvisEmerald.copy(alpha = 0.5f)))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -390,8 +391,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("termux_mcp_setup_card"),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AuroraViolet.copy(alpha = 0.5f)))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -435,7 +436,7 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                                     copyToClipboard(context, "MCP Setup Command", mcpSetupCommand)
                                     Toast.makeText(context, "Command MCP setup copied!", Toast.LENGTH_SHORT).show()
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = AuroraViolet, contentColor = Color(0xFF231433)),
+                                colors = ButtonDefaults.buttonColors(containerColor = AuroraViolet, contentColor = JarvisOnPrimary),
                                 shape = RoundedCornerShape(6.dp),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) {
@@ -460,8 +461,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(JarvisBorder))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -580,8 +581,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(JarvisBorder))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -624,8 +625,8 @@ fun JarvisTermuxScreen(viewModel: JarvisViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("termux_code_viewer_card"),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+                shape = RoundedCornerShape(GlassRadius.Card),
+                colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
                 border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(JarvisBorder))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

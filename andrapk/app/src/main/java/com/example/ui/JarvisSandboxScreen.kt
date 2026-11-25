@@ -51,14 +51,14 @@ fun JarvisSandboxScreen(viewModel: JarvisViewModel) {
             .fillMaxSize()
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(top = 14.dp, bottom = 96.dp)
+        contentPadding = PaddingValues(top = 14.dp, bottom = GlassSpacing.FloatingNavClearance)
     ) {
         if (lastResult != null) {
             item(key = "sandbox_result", contentType = "banner") {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = JarvisSurfaceVariant),
+                    shape = RoundedCornerShape(GlassRadius.Card),
+                    colors = CardDefaults.cardColors(containerColor = GlassElevatedTint),
                     border = SandboxResultBorder
                 ) {
                     Row(
@@ -135,8 +135,8 @@ private fun SandboxInspectorCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("sandbox_inspector_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+        shape = RoundedCornerShape(GlassRadius.Card),
+        colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
         border = SandboxCardBorder
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -211,8 +211,8 @@ private fun SandboxTapGestureCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("sandbox_tap_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+        shape = RoundedCornerShape(GlassRadius.Card),
+        colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
         border = SandboxCardBorder
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -309,8 +309,8 @@ private fun SandboxTextInputCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("sandbox_type_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+        shape = RoundedCornerShape(GlassRadius.Card),
+        colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
         border = SandboxCardBorder
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -348,8 +348,8 @@ private fun SandboxSystemKeysCard(viewModel: JarvisViewModel) {
         modifier = Modifier
             .fillMaxWidth()
             .testTag("sandbox_keys_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+        shape = RoundedCornerShape(GlassRadius.Card),
+        colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
         border = SandboxCardBorder
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -399,8 +399,8 @@ private fun SandboxAppLauncherCard(viewModel: JarvisViewModel) {
         modifier = Modifier
             .fillMaxWidth()
             .testTag("sandbox_app_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+        shape = RoundedCornerShape(GlassRadius.Card),
+        colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
         border = SandboxCardBorder
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -451,8 +451,8 @@ private fun SandboxShellCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("sandbox_shell_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = JarvisSurface),
+        shape = RoundedCornerShape(GlassRadius.Card),
+        colors = CardDefaults.cardColors(containerColor = GlassSurfaceTint),
         border = SandboxCardBorder
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

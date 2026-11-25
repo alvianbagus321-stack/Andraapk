@@ -414,13 +414,13 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                         .fillMaxWidth()
                         .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(bottom = 104.dp)
+                    contentPadding = PaddingValues(bottom = GlassSpacing.FloatingNavClearance)
                 ) {
                     item(key = "mcp_hub_banner", contentType = "mcp_header") {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            color = JarvisSurface,
+                            shape = RoundedCornerShape(GlassRadius.Card),
+                            color = GlassSurfaceTint,
                             border = ToolCardBorderActive
                         ) {
                             Row(
@@ -578,7 +578,7 @@ fun JarvisToolsScreen(modifier: Modifier = Modifier) {
                         .fillMaxWidth()
                         .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(bottom = 104.dp)
+                    contentPadding = PaddingValues(bottom = GlassSpacing.FloatingNavClearance)
                 ) {
                     if (selectedFilter == "github" && installedGitHubTools.isNotEmpty()) {
                         items(
